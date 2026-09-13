@@ -1,0 +1,6 @@
+node_modules/
+.env
+firmware/plant_node/secrets.h
+web/dist/
+mosquitto/config/passwd
+mosquitto/certs/

@@ -1,0 +1,16 @@
+{
+  "name": "plant-vitals-server",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Ingest API and read API for the plant vitals sensor node",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "pg": "^8.13.1",
+    "mqtt": "^5.10.3"
+  }
+}

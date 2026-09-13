@@ -1,0 +1,107 @@
+# Plant vitals stack.
+#
+#   caddy      TLS terminator for the origin; also owns the broker's certificate
+#   postgres   Postgres 16, schema applied from db/schema.sql on first boot
+#   mosquitto  MQTT broker the nodes publish to
+#   server     the ingest + read API, and the MQTT->Postgres bridge inside it
+#              (optional locally - see the `server` profile)
+#
+#   docker compose up -d postgres mosquitto        # deps only, run the API on the host
+#   docker compose --profile server up -d --build  # everything in Docker (production)
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: plant-vitals-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: plant_vitals
+    ports:
+      # Bound to loopback ONLY. On the server this file runs on a public IP, and
+      # a plain '55433:5432' would publish Postgres to the internet. Local
+      # development still reaches it on localhost:55433 exactly as before.
+      # 5432 is usually taken, and 55432 already belongs to AI360-Auth.
+      - '127.0.0.1:55433:5432'
+    volumes:
+      - plant-vitals-pgdata:/var/lib/postgresql/data
+      # Applied only when the data volume is empty, i.e. on first boot.
+      - ./db/schema.sql:/docker-entrypoint-initdb.d/schema.sql:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U postgres -d plant_vitals']
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  mosquitto:
+    image: eclipse-mosquitto:2
+    container_name: plant-vitals-mosquitto
+    restart: unless-stopped
+    # ONLY the TLS port is published. 1883 still listens inside the container
+    # for the bridge on the compose network, but it is no longer reachable from
+    # the internet, so no MQTT password ever crosses the network in the clear.
+    ports:
+      - '8883:8883'
+    volumes:
+      - ./mosquitto/config:/mosquitto/config
+      - ./mosquitto/certs:/mosquitto/certs:ro
+      - plant-vitals-mqttdata:/mosquitto/data
+    # A 1 GB box with no swap: cap the broker so a runaway client cannot starve
+    # Postgres. Mosquitto idles at a few MB, so this is generous.
+    mem_limit: 96m
+
+  server:
+    profiles: ['server']
+    build: ./server
+    container_name: plant-vitals-server
+    restart: unless-stopped
+    environment:
+      # Inside the compose network the host is the service name, not localhost.
+      DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD:-postgres}@postgres:5432/plant_vitals
+      INGEST_TOKEN: ${INGEST_TOKEN}
+      PORT: 8090
+      # Inside the compose network the broker is reachable by service name, so
+      # the bridge never goes out over the public interface.
+      MQTT_URL: mqtt://mosquitto:1883
+      MQTT_USERNAME: bridge
+      MQTT_PASSWORD: ${MQTT_BRIDGE_PASSWORD}
+    ports:
+      # Loopback only. In production Caddy is the only thing that talks to this,
+      # over the compose network as `server:8090`; the host binding is kept so
+      # deploy.sh can health-check it without going out through Cloudflare.
+      - '127.0.0.1:${WEB_PORT:-8090}:8090'
+    volumes:
+      # The dashboard is built on the developer's machine and rsynced, so it is
+      # mounted rather than baked into the image: a UI change needs a sync and a
+      # restart, not a rebuild. index.js resolves ../web/dist from /app.
+      - ./web/dist:/web/dist:ro
+    mem_limit: 256m
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mosquitto:
+        condition: service_started
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: plant-vitals-caddy
+    restart: unless-stopped
+    # The only two ports open to the world. 80 is not merely a redirect: it is
+    # how Cloudflare reaches the origin on a Flexible zone, and how the ACME
+    # HTTP-01 challenge arrives.
+    ports:
+      - '80:80'
+      - '443:443'
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - plant-vitals-caddydata:/data
+      - plant-vitals-caddyconfig:/config
+    mem_limit: 128m
+    depends_on:
+      - server
+
+volumes:
+  plant-vitals-pgdata:
+  plant-vitals-mqttdata:
+  plant-vitals-caddydata:
+  plant-vitals-caddyconfig:

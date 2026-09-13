@@ -1,0 +1,9 @@
+# Least privilege per role. The node can only write, the bridge can only read,
+# so a compromised node credential cannot feed the dashboard false history by
+# subscribing and republishing, and cannot read anything back.
+
+user plantnode
+topic write plants/#
+
+user bridge
+topic read plants/#

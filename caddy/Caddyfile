@@ -1,0 +1,30 @@
+{
+	# No automatic HTTP->HTTPS redirect on the origin. Cloudflare's edge decides
+	# what browsers get; the origin has to answer whichever protocol Cloudflare
+	# uses to reach it. With the redirect on, a zone set to Flexible (Cloudflare
+	# fetching origin over HTTP) would bounce forever - the classic redirect
+	# loop. Without it, both Flexible and Full (strict) work unchanged.
+	auto_https disable_redirects
+}
+
+# The dashboard. Proxied through Cloudflare, so the certificate here is for the
+# Cloudflare-to-origin leg; browsers see Cloudflare's own certificate.
+plant.juhawilppu.com {
+	reverse_proxy server:8090
+
+	log {
+		output file /data/access-plant.log {
+			roll_size 5MiB
+			roll_keep 2
+		}
+	}
+}
+
+# Not proxied, so this name resolves straight here. It exists in Caddy only so
+# that Caddy obtains and RENEWS a publicly trusted certificate for it - the
+# actual consumer is Mosquitto, on 8883, via sync-certs.sh. An ESP32 validating
+# a Let's Encrypt chain needs a real certificate, which is why a Cloudflare
+# Origin CA certificate would not do here.
+mqtt.juhawilppu.com {
+	respond "plant-vitals broker: MQTT over TLS on port 8883" 200
+}

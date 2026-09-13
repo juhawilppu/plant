@@ -111,6 +111,53 @@ node server/fake-node.js --host $H --duplicate      # each sent twice with the
                                                     # same msg_id: proves the dedup
 ```
 
+### Keeping the dashboard alive before the hardware exists
+
+A LaunchAgent on the development Mac publishes one reading every five minutes,
+so the deployed dashboard has a moving trace to look at.
+
+```sh
+./install-agent.sh            # install or update, and start it
+./install-agent.sh --remove   # uninstall
+```
+
+**Why a LaunchAgent and not cron, and why it does not run from this directory.**
+macOS TCC denies *scheduled* jobs read access to `~/Documents`, `~/Desktop` and
+`~/Downloads`. Both were tried on this machine and both failed identically:
+
+```
+/bin/sh: .../publish-fake-reading.sh: Operation not permitted
+Sandbox: System Policy: bash(41161) deny(1) file-read-data /Users/.../plant-vitals/...
+```
+
+cron fired exactly on schedule and still could not read the script. The
+available fixes were granting Full Disk Access to cron or `/bin/sh` - a far
+broader permission than this job warrants - or keeping the executed copy
+somewhere TCC does not guard. `install-agent.sh` does the latter: it mirrors
+`publish-fake-reading.sh`, `server/fake-node.js` and `server/node_modules` into
+`~/Library/Application Support/plant-vitals` and points the agent there. **The
+repo stays the source of truth, so re-run `install-agent.sh` after editing
+either script** or the agent will keep running the old copy.
+
+Credentials come from `~/.config/plant-vitals/env` (mode 600, outside the repo)
+rather than an ssh fetch: a scheduled job has no ssh-agent, and 288 ssh
+connections a day to the server would be silly.
+
+One reading per invocation rather than `--interval`, because the scheduler owns
+the cadence: a crash then costs a single reading instead of silently ending the
+stream. Output goes to `~/Library/Logs/plant-vitals-fake-node.log`, truncated to
+the last 500 lines once it passes 1 MB; launchd's own capture of stdout and
+stderr sits beside it in `plant-vitals-agent.{out,err}.log`.
+
+Two things to remember:
+
+- **It only runs while the Mac is awake.** Gaps overnight are the laptop
+  sleeping, not the pipeline breaking. launchd does fire shortly after wake,
+  where cron would simply have missed the slot.
+- **Remove it when the real node starts publishing**, or it will interleave
+  invented readings with measured ones under the same `device_id`:
+  `./install-agent.sh --remove`
+
 Watching the live stream, which is the debugging ergonomics MQTT buys:
 
 ```sh

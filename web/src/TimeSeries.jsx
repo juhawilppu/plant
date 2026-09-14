@@ -48,6 +48,7 @@ export default function TimeSeries({
     decimals = 1,
     height = 200,
     markers = [], // [{ index, label }] - events worth naming on the x axis
+    pending = false, // first fetch still in flight: no data, and no claim either
     className = '',
 }) {
     const [hostRef, width] = useWidth(640, 260);
@@ -120,7 +121,9 @@ export default function TimeSeries({
                 {unit ? <span style={{ color: 'var(--text-muted)' }}>({unit})</span> : null}
             </div>
 
-            {!withValues.length ? (
+            {pending ? (
+                <span className="skeleton skel-chart" style={{ height }} />
+            ) : !withValues.length ? (
                 <div className="empty">No readings in this range</div>
             ) : (
             <>

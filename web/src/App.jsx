@@ -138,7 +138,7 @@ function LeafMark() {
     );
 }
 
-function Tile({ label, color, value, unit, decimals = 1, points }) {
+function Tile({ label, color, value, unit, decimals = 1, points, pending }) {
     return (
         <div className="card">
             <div className="tile-label">
@@ -146,11 +146,21 @@ function Tile({ label, color, value, unit, decimals = 1, points }) {
                 {label}
             </div>
             <div className="tile-value">
-                {value == null ? '—' : value.toFixed(decimals)}
-                {value == null ? null : <span className="tile-unit">{unit}</span>}
+                {pending ? (
+                    <span className="skeleton skel-value" />
+                ) : (
+                    <>
+                        {value == null ? '—' : value.toFixed(decimals)}
+                        {value == null ? null : <span className="tile-unit">{unit}</span>}
+                    </>
+                )}
             </div>
             <div className="tile-spark">
-                <Sparkline points={points} color={color} />
+                {pending ? (
+                    <span className="skeleton skel-spark" />
+                ) : (
+                    <Sparkline points={points} color={color} />
+                )}
             </div>
         </div>
     );
@@ -198,6 +208,13 @@ export default function App() {
         const id = setInterval(() => setNow(Date.now()), 30 * 1000);
         return () => clearInterval(id);
     }, []);
+
+    // Two different "loading"s. `pending` is the first fetch, when the page
+    // knows nothing and must not assert anything; `refetching` is a range
+    // change, where the previous render is still true and is simply held at
+    // reduced opacity rather than replaced by placeholders.
+    const pending = data == null && error == null;
+    const refetching = loading && data != null;
 
     const readings = data?.readings ?? [];
     const latest = readings.length ? readings[readings.length - 1] : null;
@@ -247,20 +264,29 @@ export default function App() {
                         <LeafMark />
                     </span>
                     <div>
-                        <h1>{plantName}</h1>
-                        <div className="brand-sub">{placeName}</div>
+                        <h1>{pending ? <span className="skeleton skel-title" /> : plantName}</h1>
+                        <div className="brand-sub">
+                            {pending ? <span className="skeleton skel-sub" /> : placeName}
+                        </div>
                     </div>
                 </div>
                 <div className="lastseen" title={lastSeenAt ?? undefined}>
                     <span
                         className="dot"
                         style={{
-                            background: latest
-                                ? freshnessColor(latest.recorded_at, now)
-                                : 'var(--text-muted)',
+                            background:
+                                latest && !pending
+                                    ? freshnessColor(latest.recorded_at, now)
+                                    : 'var(--text-muted)',
                         }}
                     />
-                    {latest ? `Last reading ${lastSeenAge}` : 'No readings yet'}
+                    {pending
+                        ? 'Checking\u2026'
+                        : error && data == null
+                          ? 'Unavailable'
+                          : latest
+                            ? `Last reading ${lastSeenAge}`
+                            : 'No readings yet'}
                 </div>
             </header>
 
@@ -271,21 +297,36 @@ export default function App() {
                 </div>
             ) : null}
 
-            <div className={`hero-card ${loading ? 'reloading' : ''}`}>
+            {error && data == null ? null : (
+              <>
+            <div className={`hero-card ${refetching ? 'reloading' : ''}`}>
                 <div className="hero">
                     <div>
                         <div className="hero-label">Soil moisture</div>
                         <div className="hero-value">
-                            {latest?.soil_pct == null ? '—' : `${latest.soil_pct.toFixed(0)}%`}
+                            {pending ? (
+                                <span className="skeleton skel-hero" />
+                            ) : latest?.soil_pct == null ? (
+                                '—'
+                            ) : (
+                                `${latest.soil_pct.toFixed(0)}%`
+                            )}
                         </div>
                     </div>
-                    <span className="verdict">
-                        <Icon name={verdict.icon} color={verdict.color} />
-                        {verdict.text}
-                    </span>
+                    {/* No verdict until there is a reading to have one about. */}
+                    {pending ? null : (
+                        <span className="verdict">
+                            <Icon name={verdict.icon} color={verdict.color} />
+                            {verdict.text}
+                        </span>
+                    )}
                 </div>
 
-                {latest?.soil_pct != null ? (
+                {pending ? (
+                    <div className="meter">
+                        <div style={{ width: 0 }} />
+                    </div>
+                ) : latest?.soil_pct != null ? (
                     <>
                         <div className="meter">
                             <div
@@ -314,6 +355,7 @@ export default function App() {
                     value={latest?.air_temp_c ?? null}
                     unit="°C"
                     points={series.temp}
+                    pending={pending}
                 />
                 <Tile
                     label="Humidity"
@@ -321,6 +363,7 @@ export default function App() {
                     value={latest?.humidity_pct ?? null}
                     unit="%"
                     points={series.humidity}
+                    pending={pending}
                 />
                 <Tile
                     label="Light"
@@ -329,6 +372,7 @@ export default function App() {
                     unit="lux"
                     decimals={0}
                     points={series.light}
+                    pending={pending}
                 />
                 <Tile
                     label="WiFi signal"
@@ -337,6 +381,7 @@ export default function App() {
                     unit="dBm"
                     decimals={0}
                     points={series.rssi}
+                    pending={pending}
                 />
             </div>
 
@@ -356,7 +401,7 @@ export default function App() {
                 </button>
             </div>
 
-            <div className={`grid ${loading ? 'reloading' : ''}`}>
+            <div className={`grid ${refetching ? 'reloading' : ''}`}>
                 <TimeSeries
                     className="span-2"
                     title="Soil moisture"
@@ -367,13 +412,14 @@ export default function App() {
                     decimals={0}
                     height={250}
                     markers={watering ? [{ index: watering.index, label: 'watered' }] : []}
+                    pending={pending}
                 />
-                <TimeSeries title="Air temperature" unit="°C" color={SERIES.temp} points={series.temp} spanHours={hours} />
-                <TimeSeries title="Humidity" unit="%" color={SERIES.humidity} points={series.humidity} spanHours={hours} />
-                <TimeSeries title="Light" unit="lux" color={SERIES.light} points={series.light} spanHours={hours} decimals={0} />
+                <TimeSeries title="Air temperature" unit="°C" color={SERIES.temp} points={series.temp} spanHours={hours} pending={pending} />
+                <TimeSeries title="Humidity" unit="%" color={SERIES.humidity} points={series.humidity} spanHours={hours} pending={pending} />
+                <TimeSeries title="Light" unit="lux" color={SERIES.light} points={series.light} spanHours={hours} decimals={0} pending={pending} />
             </div>
 
-            {showTable ? (
+            {showTable && !pending ? (
                 <div className="card" style={{ marginTop: 16 }}>
                     <div className="tile-label">All readings in this range</div>
                     <div className="table-scroll">
@@ -415,6 +461,8 @@ export default function App() {
                     </div>
                 </div>
             ) : null}
+              </>
+            )}
         </div>
     );
 }

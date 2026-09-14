@@ -41,6 +41,7 @@
        flip with the mode: white reads at 5.1:1 on the light-mode green but only
        2.3:1 on the lighter green dark mode needs. */
     --accent-fg: #ffffff;
+    --skeleton: #e6ded0;
 }
 
 /* The dark side of "sunny" is warm and green rather than the usual neutral
@@ -73,6 +74,7 @@
         --status-warning: #e0b23c;
         --status-critical: #e5695f;
         --accent-fg: #14210f;
+        --skeleton: #2b3124;
     }
 }
 
@@ -102,6 +104,7 @@
     --status-warning: #e0b23c;
     --status-critical: #e5695f;
     --accent-fg: #14210f;
+    --skeleton: #2b3124;
 }
 
 * {
@@ -421,4 +424,67 @@ th {
     background: var(--surface-1);
     border-radius: 6px;
     padding: 2px 6px;
+}
+
+/* --- first load ---------------------------------------------------------
+   Until the first fetch returns, the page knows nothing: it must not claim
+   "No readings yet" or "Not calibrated", which are findings, not blanks.
+   Placeholders are sized in em against the type they stand in for, so they
+   track the clamped hero number and never jump when the real value lands. */
+.skeleton {
+    display: inline-block;
+    vertical-align: middle;
+    background: var(--skeleton);
+    border-radius: 10px;
+    animation: skeleton-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes skeleton-pulse {
+    0%,
+    100% {
+        opacity: 1;
+    }
+    50% {
+        opacity: 0.5;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .skeleton {
+        animation: none;
+    }
+}
+
+.skel-title {
+    width: 5.2em;
+    height: 0.82em;
+}
+
+.skel-sub {
+    width: 6.4em;
+    height: 0.86em;
+}
+
+.skel-hero {
+    width: 1.62em;
+    height: 0.88em;
+    border-radius: 16px;
+}
+
+.skel-value {
+    width: 1.9em;
+    height: 0.84em;
+}
+
+.skel-spark {
+    display: block;
+    width: 100%;
+    height: 46px;
+    border-radius: 8px;
+}
+
+.skel-chart {
+    display: block;
+    width: 100%;
+    border-radius: 14px;
 }

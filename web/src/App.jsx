@@ -24,6 +24,20 @@ function verdictFor(pct) {
     return { text: 'Comfortable', color: 'var(--status-good)', icon: 'check' };
 }
 
+// The header answers "is the node still alive?", so the age of the last reading
+// matters more than its wall-clock time. Minutes stay exact up to an hour, then
+// the unit widens — nobody needs "just now" resolution on a two-day-old reading.
+function relativeAge(iso, now) {
+    const mins = Math.floor((now - new Date(iso).getTime()) / 60000);
+    if (mins < 1) return 'just now';
+    if (mins === 1) return '1 min ago';
+    if (mins < 60) return `${mins} min ago`;
+    const hours = Math.floor(mins / 60);
+    if (hours < 24) return hours === 1 ? '1 hour ago' : `${hours} hours ago`;
+    const days = Math.floor(hours / 24);
+    return days === 1 ? '1 day ago' : `${days} days ago`;
+}
+
 function Icon({ name, color }) {
     const common = {
         width: 14,
@@ -80,6 +94,7 @@ export default function App() {
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
     const [showTable, setShowTable] = useState(false);
+    const [now, setNow] = useState(() => Date.now());
 
     useEffect(() => {
         let cancelled = false;
@@ -108,6 +123,13 @@ export default function App() {
         return () => clearInterval(id);
     }, []);
 
+    // The age label has to keep counting between fetches, so it gets its own
+    // clock rather than riding on the poll.
+    useEffect(() => {
+        const id = setInterval(() => setNow(Date.now()), 30 * 1000);
+        return () => clearInterval(id);
+    }, []);
+
     const readings = data?.readings ?? [];
     const latest = readings.length ? readings[readings.length - 1] : null;
     const device = devices.find((d) => d.device_id === (data?.device ?? 'plant-01'));
@@ -124,7 +146,7 @@ export default function App() {
 
     const verdict = verdictFor(latest?.soil_pct ?? null);
 
-    const lastSeen = latest
+    const lastSeenAt = latest
         ? new Date(latest.recorded_at).toLocaleString([], {
               day: 'numeric',
               month: 'short',
@@ -132,6 +154,7 @@ export default function App() {
               minute: '2-digit',
           })
         : null;
+    const lastSeenAge = latest ? relativeAge(latest.recorded_at, now) : null;
 
     return (
         <div className="wrap">
@@ -142,7 +165,9 @@ export default function App() {
                         {device ? `${device.label}${device.plant && device.plant !== 'unknown' ? ` · ${device.plant}` : ''}` : 'plant-01'}
                     </div>
                 </div>
-                <div className="subtle">{lastSeen ? `Last reading ${lastSeen}` : 'No readings yet'}</div>
+                <div className="subtle" title={lastSeenAt ?? undefined}>
+                    {latest ? `Last reading ${lastSeenAge} · ${lastSeenAt}` : 'No readings yet'}
+                </div>
             </header>
 
             {error ? (

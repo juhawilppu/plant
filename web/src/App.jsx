@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import TimeSeries from './TimeSeries.jsx';
+import Sparkline from './Sparkline.jsx';
 
 const RANGES = [
     { label: '24 hours', hours: 24 },
@@ -12,16 +13,35 @@ const SERIES = {
     temp: 'var(--series-temp)',
     humidity: 'var(--series-humidity)',
     light: 'var(--series-light)',
+    rssi: 'var(--text-muted)',
 };
 
 // Soil moisture is the only reading that implies an action, so it is the only
 // one given a verdict. Status colour never travels alone: each of these ships
 // with its own icon and its own words.
 function verdictFor(pct) {
-    if (pct == null) return { text: 'Not calibrated', color: 'var(--text-muted)', icon: 'info' };
-    if (pct < 25) return { text: 'Needs water', color: 'var(--status-critical)', icon: 'alert' };
-    if (pct < 40) return { text: 'Getting dry', color: 'var(--status-warning)', icon: 'clock' };
-    return { text: 'Comfortable', color: 'var(--status-good)', icon: 'check' };
+    if (pct == null)
+        return { text: 'Not calibrated', color: 'var(--text-muted)', icon: 'info', advice: null };
+    if (pct < 25)
+        return {
+            text: 'Needs water',
+            color: 'var(--status-critical)',
+            icon: 'alert',
+            advice: 'Time for a drink.',
+        };
+    if (pct < 40)
+        return {
+            text: 'Getting dry',
+            color: 'var(--status-warning)',
+            icon: 'clock',
+            advice: 'Worth a look in the next day or so.',
+        };
+    return {
+        text: 'Comfortable',
+        color: 'var(--status-good)',
+        icon: 'check',
+        advice: 'Nothing needs doing today.',
+    };
 }
 
 // The header answers "is the node still alive?", so the age of the last reading
@@ -38,14 +58,40 @@ function relativeAge(iso, now) {
     return days === 1 ? '1 day ago' : `${days} days ago`;
 }
 
-function Icon({ name, color }) {
+// The node publishes every five minutes, so a gap past fifteen means two missed
+// slots - long enough to be worth flagging, short enough not to cry wolf. The
+// dot only ever restates what the words beside it already say.
+function freshnessColor(iso, now) {
+    const mins = (now - new Date(iso).getTime()) / 60000;
+    if (mins > 60) return 'var(--status-critical)';
+    if (mins > 15) return 'var(--status-warning)';
+    return 'var(--status-good)';
+}
+
+// Soil moisture that climbs more than five points between consecutive samples
+// is a watering, not weather - nothing else moves the probe that fast. Only the
+// most recent one is marked; older steps are history the chart already shows.
+const WATERING_JUMP_PCT = 5;
+
+function findWatering(readings) {
+    for (let i = readings.length - 1; i > 0; i--) {
+        const prev = readings[i - 1].soil_pct;
+        const cur = readings[i].soil_pct;
+        if (prev != null && cur != null && cur - prev > WATERING_JUMP_PCT) {
+            return { index: i, at: readings[i].recorded_at };
+        }
+    }
+    return null;
+}
+
+function Icon({ name, color, size = 20 }) {
     const common = {
-        width: 14,
-        height: 14,
+        width: size,
+        height: size,
         viewBox: '0 0 16 16',
         fill: 'none',
         stroke: color,
-        strokeWidth: 2,
+        strokeWidth: 2.2,
         strokeLinecap: 'round',
         strokeLinejoin: 'round',
     };
@@ -72,7 +118,27 @@ function Icon({ name, color }) {
     );
 }
 
-function Tile({ label, color, value, unit, decimals = 1 }) {
+function LeafMark() {
+    return (
+        <svg
+            width="30"
+            height="30"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="var(--status-good)"
+            strokeWidth="1.8"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+        >
+            <path d="M12 21V11" />
+            <path d="M12 12C12 7.5 15 4.2 20 3.6c.5 4.9-2.4 8.3-8 8.4Z" />
+            <path d="M12 16c-4.3-.1-6.6-2.6-6.2-6.4C9.6 10.1 11.6 12.4 12 16Z" />
+        </svg>
+    );
+}
+
+function Tile({ label, color, value, unit, decimals = 1, points }) {
     return (
         <div className="card">
             <div className="tile-label">
@@ -82,6 +148,9 @@ function Tile({ label, color, value, unit, decimals = 1 }) {
             <div className="tile-value">
                 {value == null ? '—' : value.toFixed(decimals)}
                 {value == null ? null : <span className="tile-unit">{unit}</span>}
+            </div>
+            <div className="tile-spark">
+                <Sparkline points={points} color={color} />
             </div>
         </div>
     );
@@ -140,11 +209,13 @@ export default function App() {
             temp: readings.map((r) => ({ t: r.recorded_at, v: r.air_temp_c })),
             humidity: readings.map((r) => ({ t: r.recorded_at, v: r.humidity_pct })),
             light: readings.map((r) => ({ t: r.recorded_at, v: r.lux })),
+            rssi: readings.map((r) => ({ t: r.recorded_at, v: r.rssi })),
         }),
         [readings],
     );
 
     const verdict = verdictFor(latest?.soil_pct ?? null);
+    const watering = useMemo(() => findWatering(readings), [readings]);
 
     const lastSeenAt = latest
         ? new Date(latest.recorded_at).toLocaleString([], {
@@ -156,28 +227,51 @@ export default function App() {
         : null;
     const lastSeenAge = latest ? relativeAge(latest.recorded_at, now) : null;
 
+    // The plant's own name leads, because that is what the reader came for; the
+    // device id is only a fallback for a node that has not been labelled.
+    const plantName =
+        device?.plant && device.plant !== 'unknown' ? device.plant : 'Plant vitals';
+    const placeName = device?.label ?? data?.device ?? 'plant-01';
+
+    const heroNote = verdict.advice
+        ? watering
+            ? `Watered ${relativeAge(watering.at, now)}. ${verdict.advice}`
+            : verdict.advice
+        : null;
+
     return (
         <div className="wrap">
             <header>
-                <div>
-                    <h1>Plant vitals</h1>
-                    <div className="subtle">
-                        {device ? `${device.label}${device.plant && device.plant !== 'unknown' ? ` · ${device.plant}` : ''}` : 'plant-01'}
+                <div className="brand">
+                    <span className="brand-mark">
+                        <LeafMark />
+                    </span>
+                    <div>
+                        <h1>{plantName}</h1>
+                        <div className="brand-sub">{placeName}</div>
                     </div>
                 </div>
-                <div className="subtle" title={lastSeenAt ?? undefined}>
-                    {latest ? `Last reading ${lastSeenAge} · ${lastSeenAt}` : 'No readings yet'}
+                <div className="lastseen" title={lastSeenAt ?? undefined}>
+                    <span
+                        className="dot"
+                        style={{
+                            background: latest
+                                ? freshnessColor(latest.recorded_at, now)
+                                : 'var(--text-muted)',
+                        }}
+                    />
+                    {latest ? `Last reading ${lastSeenAge}` : 'No readings yet'}
                 </div>
             </header>
 
             {error ? (
                 <div className="card" style={{ marginBottom: 16 }}>
                     <strong>Cannot reach the API.</strong>{' '}
-                    <span className="subtle">{error}</span>
+                    <span style={{ color: 'var(--text-muted)' }}>{error}</span>
                 </div>
             ) : null}
 
-            <div className={`card ${loading ? 'reloading' : ''}`} style={{ marginBottom: 24 }}>
+            <div className={`hero-card ${loading ? 'reloading' : ''}`}>
                 <div className="hero">
                     <div>
                         <div className="hero-label">Soil moisture</div>
@@ -185,25 +279,26 @@ export default function App() {
                             {latest?.soil_pct == null ? '—' : `${latest.soil_pct.toFixed(0)}%`}
                         </div>
                     </div>
-                    <div style={{ paddingBottom: 6 }}>
-                        <span className="verdict">
-                            <Icon name={verdict.icon} color={verdict.color} />
-                            {verdict.text}
-                        </span>
-                    </div>
+                    <span className="verdict">
+                        <Icon name={verdict.icon} color={verdict.color} />
+                        {verdict.text}
+                    </span>
                 </div>
 
                 {latest?.soil_pct != null ? (
-                    <div className="meter">
-                        <div
-                            style={{
-                                width: `${Math.max(2, latest.soil_pct)}%`,
-                                background: verdict.color,
-                            }}
-                        />
-                    </div>
+                    <>
+                        <div className="meter">
+                            <div
+                                style={{
+                                    width: `${Math.max(2, latest.soil_pct)}%`,
+                                    background: verdict.color,
+                                }}
+                            />
+                        </div>
+                        {heroNote ? <div className="hero-note">{heroNote}</div> : null}
+                    </>
                 ) : (
-                    <div className="subtle" style={{ marginTop: 10 }}>
+                    <div className="calibration">
                         The probe has no calibration yet, so a percentage would be meaningless.
                         Record the raw value in air and in water, then set{' '}
                         <code>soil_raw_air</code> and <code>soil_raw_water</code> on the device
@@ -213,10 +308,36 @@ export default function App() {
             </div>
 
             <div className="tiles">
-                <Tile label="Air temperature" color={SERIES.temp} value={latest?.air_temp_c ?? null} unit="°C" />
-                <Tile label="Humidity" color={SERIES.humidity} value={latest?.humidity_pct ?? null} unit="%" />
-                <Tile label="Light" color={SERIES.light} value={latest?.lux ?? null} unit="lux" decimals={0} />
-                <Tile label="WiFi signal" color="var(--text-muted)" value={latest?.rssi ?? null} unit="dBm" decimals={0} />
+                <Tile
+                    label="Air temperature"
+                    color={SERIES.temp}
+                    value={latest?.air_temp_c ?? null}
+                    unit="°C"
+                    points={series.temp}
+                />
+                <Tile
+                    label="Humidity"
+                    color={SERIES.humidity}
+                    value={latest?.humidity_pct ?? null}
+                    unit="%"
+                    points={series.humidity}
+                />
+                <Tile
+                    label="Light"
+                    color={SERIES.light}
+                    value={latest?.lux ?? null}
+                    unit="lux"
+                    decimals={0}
+                    points={series.light}
+                />
+                <Tile
+                    label="WiFi signal"
+                    color={SERIES.rssi}
+                    value={latest?.rssi ?? null}
+                    unit="dBm"
+                    decimals={0}
+                    points={series.rssi}
+                />
             </div>
 
             <div className="filters">
@@ -244,6 +365,8 @@ export default function App() {
                     points={series.soil}
                     spanHours={hours}
                     decimals={0}
+                    height={250}
+                    markers={watering ? [{ index: watering.index, label: 'watered' }] : []}
                 />
                 <TimeSeries title="Air temperature" unit="°C" color={SERIES.temp} points={series.temp} spanHours={hours} />
                 <TimeSeries title="Humidity" unit="%" color={SERIES.humidity} points={series.humidity} spanHours={hours} />
@@ -251,7 +374,7 @@ export default function App() {
             </div>
 
             {showTable ? (
-                <div className="card" style={{ marginTop: 12 }}>
+                <div className="card" style={{ marginTop: 16 }}>
                     <div className="tile-label">All readings in this range</div>
                     <div className="table-scroll">
                         <table>

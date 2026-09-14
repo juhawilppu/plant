@@ -1,71 +1,107 @@
-/* Palette roles from the validated reference instance. Series hues are the
-   first four categorical slots, in fixed order:
+/* "Sunny Side": warm ground, white cards, rounded everything, large type. The
+   warmth is carried by surface, shape and scale - the four series hues are
+   unchanged from the validated instance, because that is the part of the
+   palette doing accessibility work:
      1 blue   soil moisture
      2 orange air temperature
      3 aqua   humidity
      4 yellow light
-   Validated for both modes: adjacent CVD dE 9.1 light / 8.4 dark, normal-vision
-   22.9 / 19.8. Light-mode aqua (2.74:1) and yellow (2.11:1) are under 3:1 on the
-   light surface, so the relief rule applies - hence the direct end-label on every
+   Adjacent CVD dE 9.1 light / 8.4 dark, normal-vision 22.9 / 19.8. Against the
+   new white card, light-mode aqua (2.82:1) and yellow (2.17:1) are still under
+   3:1, so the relief rule still applies - hence the direct end-label on every
    chart and the always-available table view. */
 :root {
     color-scheme: light;
 
-    --surface-0: #f4f3f0;
-    --surface-1: #fcfcfb;
-    --border: #e3e2dd;
-    --grid: #e9e8e3;
+    --surface-0: #fdf6ec;
+    --surface-1: #ffffff;
+    --surface-hero: #e8f1e0;
+    --hero-track: #d6e3cb;
+    --border: #ece3d6;
+    --grid: #edf0e9;
+    --shadow: 0 2px 14px rgba(94, 78, 48, 0.08);
+    --radius-card: 22px;
+    --radius-hero: 28px;
 
-    --text-primary: #0b0b0b;
-    --text-secondary: #52514e;
-    --text-muted: #7a7975;
+    --text-primary: #23281f;
+    --text-secondary: #5c6455;
+    --text-muted: #6b7364;
+    --hero-label: #48563f;
+    --hero-value: #1d2a1a;
 
     --series-soil: #2a78d6;
     --series-temp: #eb6834;
     --series-humidity: #1baf7a;
     --series-light: #eda100;
 
-    --status-good: #0ca30c;
-    --status-warning: #fab219;
-    --status-critical: #d03b3b;
+    --status-good: #2f7d32;
+    --status-warning: #b07d0a;
+    --status-critical: #c0392b;
+    /* Text laid ON the good colour, as the selected filter pill does. It has to
+       flip with the mode: white reads at 5.1:1 on the light-mode green but only
+       2.3:1 on the lighter green dark mode needs. */
+    --accent-fg: #ffffff;
 }
 
+/* The dark side of "sunny" is warm and green rather than the usual neutral
+   charcoal, so the two modes read as the same dashboard at different times of
+   day. */
 @media (prefers-color-scheme: dark) {
     :root:where(:not([data-theme='light'])) {
         color-scheme: dark;
 
-        --surface-0: #121211;
-        --surface-1: #1a1a19;
-        --border: #302f2c;
-        --grid: #2a2a27;
+        --surface-0: #171a12;
+        --surface-1: #1e2219;
+        --surface-hero: #26301f;
+        --hero-track: #38452e;
+        --border: #2e3427;
+        --grid: #2a3023;
+        --shadow: 0 2px 14px rgba(0, 0, 0, 0.35);
 
-        --text-primary: #ffffff;
-        --text-secondary: #c3c2b7;
-        --text-muted: #96958c;
+        --text-primary: #f3f1e6;
+        --text-secondary: #c2c7b4;
+        --text-muted: #969c88;
+        --hero-label: #b9c6ac;
+        --hero-value: #f1f6ea;
 
         --series-soil: #3987e5;
         --series-temp: #d95926;
         --series-humidity: #199e70;
         --series-light: #c98500;
+
+        --status-good: #6cbf6f;
+        --status-warning: #e0b23c;
+        --status-critical: #e5695f;
+        --accent-fg: #14210f;
     }
 }
 
 :root[data-theme='dark'] {
     color-scheme: dark;
 
-    --surface-0: #121211;
-    --surface-1: #1a1a19;
-    --border: #302f2c;
-    --grid: #2a2a27;
+    --surface-0: #171a12;
+    --surface-1: #1e2219;
+    --surface-hero: #26301f;
+    --hero-track: #38452e;
+    --border: #2e3427;
+    --grid: #2a3023;
+    --shadow: 0 2px 14px rgba(0, 0, 0, 0.35);
 
-    --text-primary: #ffffff;
-    --text-secondary: #c3c2b7;
-    --text-muted: #96958c;
+    --text-primary: #f3f1e6;
+    --text-secondary: #c2c7b4;
+    --text-muted: #969c88;
+    --hero-label: #b9c6ac;
+    --hero-value: #f1f6ea;
 
     --series-soil: #3987e5;
     --series-temp: #d95926;
     --series-humidity: #199e70;
     --series-light: #c98500;
+
+    --status-good: #6cbf6f;
+    --status-warning: #e0b23c;
+    --status-critical: #e5695f;
+    --accent-fg: #14210f;
 }
 
 * {
@@ -77,78 +113,135 @@ body {
     padding: 0;
     background: var(--surface-0);
     color: var(--text-primary);
-    font: 14px/1.5 -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    /* Nunito is the rounded face the direction rests on; the fallbacks are the
+       roundest system stacks available, so a blocked webfont degrades in the
+       same spirit rather than to a grotesque. */
+    font: 17px/1.55 Nunito, 'Avenir Next', Avenir, 'Segoe UI', system-ui,
+        -apple-system, sans-serif;
+    -webkit-font-smoothing: antialiased;
 }
 
 .wrap {
     max-width: 1100px;
     margin: 0 auto;
-    padding-block: 32px;
-    padding-left: 16px;
-    padding-right: 16px;
+    padding-block: 40px;
+    padding-left: 20px;
+    padding-right: 20px;
 }
 
 header {
     display: flex;
     flex-wrap: wrap;
-    align-items: baseline;
+    align-items: center;
     justify-content: space-between;
-    gap: 8px;
-    margin-bottom: 24px;
+    gap: 16px;
+    margin-bottom: 26px;
+}
+
+.brand {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+}
+
+.brand-mark {
+    width: 54px;
+    height: 54px;
+    border-radius: 18px;
+    background: var(--surface-hero);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: none;
 }
 
 h1 {
-    font-size: 20px;
-    font-weight: 600;
+    font-size: 36px;
+    font-weight: 800;
+    letter-spacing: -0.02em;
+    line-height: 1.05;
     margin: 0;
 }
 
-.subtle {
-    color: var(--text-muted);
-    font-size: 13px;
+.brand-sub {
+    color: var(--text-secondary);
+    font-size: 18px;
+    font-weight: 600;
+    margin-top: 3px;
+}
+
+/* The freshness pill. The dot is never the only signal - the words beside it
+   say how old the reading is - so it can carry colour safely. */
+.lastseen {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    background: var(--surface-1);
+    border-radius: 999px;
+    padding: 13px 22px;
+    box-shadow: var(--shadow);
+    font-size: 17px;
+    font-weight: 700;
+}
+
+.lastseen .dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 999px;
+    flex: none;
 }
 
 .card {
     background: var(--surface-1);
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    padding: 18px;
+    border-radius: var(--radius-card);
+    padding: 24px;
+    box-shadow: var(--shadow);
 }
 
 /* --- hero: the one number the dashboard leads with --- */
+.hero-card {
+    background: var(--surface-hero);
+    border-radius: var(--radius-hero);
+    padding: 34px 36px;
+    margin-bottom: 18px;
+}
+
 .hero {
     display: flex;
     flex-wrap: wrap;
     align-items: flex-end;
+    justify-content: space-between;
     gap: 24px;
-    margin-bottom: 16px;
+}
+
+.hero-label {
+    color: var(--hero-label);
+    font-size: 20px;
+    font-weight: 700;
+    margin-bottom: 2px;
 }
 
 .hero-value {
     /* Proportional figures, not tabular: tabular-nums makes a display-size
-       number look loose. */
-    font-size: 56px;
-    font-weight: 600;
-    line-height: 1;
-    letter-spacing: -0.02em;
-}
-
-.hero-label {
-    color: var(--text-secondary);
-    font-size: 13px;
-    margin-bottom: 6px;
+       number look loose. Clamped because 132px does not fit a phone. */
+    font-size: clamp(76px, 13vw, 132px);
+    font-weight: 800;
+    line-height: 0.95;
+    letter-spacing: -0.035em;
+    color: var(--hero-value);
 }
 
 .verdict {
     display: inline-flex;
     align-items: center;
-    gap: 7px;
-    font-size: 13px;
-    font-weight: 500;
-    padding: 5px 11px;
+    gap: 10px;
+    font-size: 21px;
+    font-weight: 700;
+    padding: 14px 24px;
     border-radius: 999px;
-    border: 1px solid var(--border);
+    background: var(--surface-1);
     color: var(--text-primary);
+    margin-bottom: 14px;
 }
 
 .verdict svg {
@@ -157,11 +250,11 @@ h1 {
 
 /* --- meter: soil moisture against its watering thresholds --- */
 .meter {
-    height: 8px;
+    height: 20px;
     border-radius: 999px;
-    background: color-mix(in srgb, var(--series-soil) 16%, var(--surface-1));
+    background: var(--hero-track);
     overflow: hidden;
-    margin-top: 14px;
+    margin-top: 24px;
 }
 
 .meter > div {
@@ -169,42 +262,55 @@ h1 {
     border-radius: 999px;
 }
 
+.hero-note {
+    font-size: 18px;
+    font-weight: 600;
+    color: var(--hero-label);
+    margin-top: 16px;
+}
+
 /* --- stat tiles --- */
 .tiles {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-    gap: 12px;
-    margin-bottom: 24px;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 16px;
+    margin-bottom: 26px;
 }
 
 .tile-label {
     display: flex;
     align-items: center;
-    gap: 7px;
+    gap: 9px;
     color: var(--text-secondary);
-    font-size: 13px;
-    margin-bottom: 6px;
+    font-size: 17px;
+    font-weight: 600;
+    margin-bottom: 8px;
 }
 
 .tile-value {
-    font-size: 26px;
-    font-weight: 600;
-    line-height: 1.1;
+    font-size: 46px;
+    font-weight: 800;
+    line-height: 1.05;
+    letter-spacing: -0.02em;
 }
 
 .tile-unit {
-    font-size: 14px;
-    font-weight: 400;
+    font-size: 19px;
+    font-weight: 600;
     color: var(--text-muted);
-    margin-left: 2px;
+    margin-left: 4px;
+}
+
+.tile-spark {
+    margin-top: 10px;
 }
 
 /* Identity comes from a colored key beside the text, never from coloring the
    text itself - the light aqua and yellow are illegible as type. */
 .key {
-    width: 10px;
-    height: 10px;
-    border-radius: 3px;
+    width: 11px;
+    height: 11px;
+    border-radius: 999px;
     flex: none;
 }
 
@@ -212,27 +318,30 @@ h1 {
 .filters {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 10px;
     flex-wrap: wrap;
-    margin-bottom: 16px;
+    margin-bottom: 18px;
 }
 
 .filters button {
     font: inherit;
-    font-size: 13px;
-    padding: 6px 13px;
-    border-radius: 7px;
-    border: 1px solid var(--border);
+    font-size: 17px;
+    font-weight: 600;
+    /* 48px clears the 44px touch-target floor without a min-height hack. */
+    padding: 13px 24px;
+    border-radius: 999px;
+    border: none;
     background: var(--surface-1);
     color: var(--text-secondary);
+    box-shadow: var(--shadow);
     cursor: pointer;
 }
 
 .filters button[aria-pressed='true'] {
-    background: var(--text-primary);
-    border-color: var(--text-primary);
-    color: var(--surface-1);
-    font-weight: 500;
+    background: var(--status-good);
+    color: var(--accent-fg);
+    font-weight: 700;
+    box-shadow: none;
 }
 
 .spacer {
@@ -242,7 +351,7 @@ h1 {
 .grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
-    gap: 12px;
+    gap: 16px;
 }
 
 /* Soil moisture is the chart that answers the question the dashboard exists
@@ -259,10 +368,15 @@ h1 {
 }
 
 /* --- table view (the relief channel, and the no-hover path to every value) --- */
+.table-scroll {
+    max-height: 460px;
+    overflow: auto;
+}
+
 table {
     width: 100%;
     border-collapse: collapse;
-    font-size: 13px;
+    font-size: 16px;
     /* Columns of numbers DO want tabular figures, so they align vertically. */
     font-variant-numeric: tabular-nums;
 }
@@ -270,7 +384,7 @@ table {
 th,
 td {
     text-align: right;
-    padding: 7px 10px;
+    padding: 10px 12px;
     border-bottom: 1px solid var(--border);
     white-space: nowrap;
 }
@@ -282,19 +396,29 @@ td:first-child {
 
 th {
     color: var(--text-secondary);
-    font-weight: 500;
+    font-weight: 700;
     position: sticky;
     top: 0;
     background: var(--surface-1);
 }
 
-.table-scroll {
-    max-height: 420px;
-    overflow: auto;
-}
-
 .empty {
     color: var(--text-muted);
-    padding: 40px 0;
+    padding: 44px 0;
     text-align: center;
+    font-weight: 600;
+}
+
+.calibration {
+    color: var(--hero-label);
+    font-size: 18px;
+    font-weight: 600;
+    margin-top: 16px;
+}
+
+.calibration code {
+    font-size: 16px;
+    background: var(--surface-1);
+    border-radius: 6px;
+    padding: 2px 6px;
 }

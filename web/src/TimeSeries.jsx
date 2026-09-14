@@ -1,16 +1,16 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
+import useWidth, { segmentsOf } from './useWidth.js';
 
 // One measure over time, hand-rolled in SVG rather than pulled from a chart
-// library: the mark specs here (2px line, >=8px end dot with a 2px surface ring,
-// hairline solid gridlines, 10% area wash, a single direct end-label) are easier
-// to hold exactly than to argue a library into.
+// library: the mark specs here (2.6px line, >=10px end dot with a surface ring,
+// hairline solid gridlines, area wash, a single direct end-label) are easier to
+// hold exactly than to argue a library into.
 //
 // Always a SINGLE series, so there is no legend - the card's title names what is
 // plotted, and a one-swatch legend would only restate it. Two measures never
 // share these axes: a second y-scale is the one thing this file will not do.
 
-const PAD = { top: 16, right: 60, bottom: 26, left: 46 };
-const HEIGHT = 190;
+const PAD = { top: 18, right: 70, bottom: 32, left: 56 };
 
 // Rounded, human tick values - the ticks carry every number that isn't directly
 // labelled, so they have to read cleanly.
@@ -46,22 +46,12 @@ export default function TimeSeries({
     points, // [{ t: ISO string, v: number | null }]
     spanHours,
     decimals = 1,
+    height = 200,
+    markers = [], // [{ index, label }] - events worth naming on the x axis
     className = '',
 }) {
-    const hostRef = useRef(null);
-    const [width, setWidth] = useState(640);
+    const [hostRef, width] = useWidth(640, 260);
     const [cursor, setCursor] = useState(null); // index into points
-
-    useEffect(() => {
-        const el = hostRef.current;
-        if (!el || typeof ResizeObserver === 'undefined') return;
-        const ro = new ResizeObserver((entries) => {
-            const w = entries[0]?.contentRect?.width;
-            if (w) setWidth(Math.max(260, w));
-        });
-        ro.observe(el);
-        return () => ro.disconnect();
-    }, []);
 
     const withValues = useMemo(() => points.filter((p) => p.v != null), [points]);
 
@@ -71,7 +61,7 @@ export default function TimeSeries({
     }, [withValues]);
 
     const plotW = Math.max(10, width - PAD.left - PAD.right);
-    const plotH = HEIGHT - PAD.top - PAD.bottom;
+    const plotH = height - PAD.top - PAD.bottom;
 
     const x = useCallback(
         (i) => PAD.left + (points.length <= 1 ? plotW / 2 : (i / (points.length - 1)) * plotW),
@@ -82,22 +72,7 @@ export default function TimeSeries({
         [lo, hi, plotH],
     );
 
-    // A dropped sensor leaves a null, and the line breaks there rather than
-    // drawing a straight lie across the gap.
-    const segments = useMemo(() => {
-        const out = [];
-        let run = [];
-        points.forEach((p, i) => {
-            if (p.v == null) {
-                if (run.length) out.push(run);
-                run = [];
-            } else {
-                run.push([x(i), y(p.v)]);
-            }
-        });
-        if (run.length) out.push(run);
-        return out;
-    }, [points, x, y]);
+    const segments = useMemo(() => segmentsOf(points, x, y), [points, x, y]);
 
     const lastIdx = useMemo(() => {
         for (let i = points.length - 1; i >= 0; i--) if (points[i].v != null) return i;
@@ -105,6 +80,7 @@ export default function TimeSeries({
     }, [points]);
 
     const fmt = (v) => (v == null ? '—' : v.toFixed(decimals));
+    const washId = `wash-${title.replace(/\W/g, '')}`;
 
     const onPointer = (e) => {
         const rect = e.currentTarget.getBoundingClientRect();
@@ -151,8 +127,8 @@ export default function TimeSeries({
 
             <svg
                 width="100%"
-                height={HEIGHT}
-                viewBox={`0 0 ${width} ${HEIGHT}`}
+                height={height}
+                viewBox={`0 0 ${width} ${height}`}
                 role="img"
                 aria-label={`${title} over the selected range. Latest ${fmt(points[lastIdx]?.v)} ${unit}.`}
                 tabIndex={0}
@@ -162,9 +138,9 @@ export default function TimeSeries({
                 style={{ display: 'block', touchAction: 'none', outline: 'none' }}
             >
                 <defs>
-                    <linearGradient id={`wash-${title.replace(/\W/g, '')}`} x1="0" x2="0" y1="0" y2="1">
-                        <stop offset="0%" stopColor={color} stopOpacity="0.1" />
-                        <stop offset="100%" stopColor={color} stopOpacity="0.02" />
+                    <linearGradient id={washId} x1="0" x2="0" y1="0" y2="1">
+                        <stop offset="0%" stopColor={color} stopOpacity="0.16" />
+                        <stop offset="100%" stopColor={color} stopOpacity="0.01" />
                     </linearGradient>
                 </defs>
 
@@ -180,10 +156,11 @@ export default function TimeSeries({
                             strokeWidth="1"
                         />
                         <text
-                            x={PAD.left - 8}
-                            y={y(t) + 4}
+                            x={PAD.left - 10}
+                            y={y(t) + 5}
                             textAnchor="end"
-                            fontSize="11"
+                            fontSize="15"
+                            fontWeight="600"
                             fill="var(--text-muted)"
                             style={{ fontVariantNumeric: 'tabular-nums' }}
                         >
@@ -192,7 +169,7 @@ export default function TimeSeries({
                     </g>
                 ))}
 
-                {/* Area wash under each segment - a 10% tint, never a solid block. */}
+                {/* Area wash under each segment - a tint, never a solid block. */}
                 {segments.map((seg, i) => (
                     <path
                         key={`a${i}`}
@@ -201,7 +178,7 @@ export default function TimeSeries({
                             seg.map(([px, py]) => `L ${px} ${py}`).join(' ') +
                             ` L ${seg[seg.length - 1][0]} ${PAD.top + plotH} Z`
                         }
-                        fill={`url(#wash-${title.replace(/\W/g, '')})`}
+                        fill={`url(#${washId})`}
                     />
                 ))}
 
@@ -211,22 +188,54 @@ export default function TimeSeries({
                         d={seg.map(([px, py], j) => `${j ? 'L' : 'M'} ${px} ${py}`).join(' ')}
                         fill="none"
                         stroke={color}
-                        strokeWidth="2"
+                        strokeWidth="2.6"
                         strokeLinejoin="round"
                         strokeLinecap="round"
                     />
                 ))}
 
+                {/* Named events - a watering shows up as a step the reader would
+                    otherwise have to interpret, so it gets said in words. */}
+                {markers.map((m) => (
+                    <g key={`m${m.index}`}>
+                        <line
+                            x1={x(m.index)}
+                            x2={x(m.index)}
+                            y1={PAD.top}
+                            y2={PAD.top + plotH}
+                            stroke="var(--text-muted)"
+                            strokeWidth="1.5"
+                            strokeDasharray="3 5"
+                        />
+                        <text
+                            x={x(m.index) + 9}
+                            y={PAD.top + 17}
+                            fontSize="15"
+                            fontWeight="600"
+                            fill="var(--text-secondary)"
+                        >
+                            {m.label}
+                        </text>
+                    </g>
+                ))}
+
                 {/* X labels: first and last only. More would collide at this width,
                     and the crosshair readout carries every time in between. */}
-                <text x={PAD.left} y={HEIGHT - 8} fontSize="11" fill="var(--text-muted)">
+                <text
+                    x={PAD.left}
+                    y={height - 8}
+                    fontSize="15"
+                    fontWeight="600"
+                    fill="var(--text-muted)"
+                >
                     {formatTime(points[0].t, spanHours)}
                 </text>
                 <text
                     x={PAD.left + plotW}
-                    y={HEIGHT - 8}
+                    y={height - 8}
                     textAnchor="end"
-                    fontSize="11"
+                    fontSize="15"
+                    fontWeight="600"
                     fill="var(--text-muted)"
                 >
                     {formatTime(points[points.length - 1].t, spanHours)}
@@ -240,16 +249,16 @@ export default function TimeSeries({
                         <circle
                             cx={x(lastIdx)}
                             cy={y(points[lastIdx].v)}
-                            r="4.5"
+                            r="5.5"
                             fill={color}
                             stroke="var(--surface-1)"
-                            strokeWidth="2"
+                            strokeWidth="3"
                         />
                         <text
-                            x={Math.min(x(lastIdx) + 10, width - 4)}
-                            y={y(points[lastIdx].v) + 4}
-                            fontSize="12"
-                            fontWeight="600"
+                            x={Math.min(x(lastIdx) + 13, width - 4)}
+                            y={y(points[lastIdx].v) + 7}
+                            fontSize="19"
+                            fontWeight="800"
                             fill="var(--text-primary)"
                         >
                             {fmt(points[lastIdx].v)}
@@ -272,10 +281,10 @@ export default function TimeSeries({
                             <circle
                                 cx={curX}
                                 cy={y(cur.v)}
-                                r="4.5"
+                                r="5.5"
                                 fill={color}
                                 stroke="var(--surface-1)"
-                                strokeWidth="2"
+                                strokeWidth="3"
                             />
                         ) : null}
                     </>
@@ -288,42 +297,42 @@ export default function TimeSeries({
                 <div
                     style={{
                         position: 'absolute',
-                        left: Math.max(8, Math.min(curX - 60, width - 140)),
-                        top: 42,
+                        left: Math.max(8, Math.min(curX - 70, width - 160)),
+                        top: 46,
                         pointerEvents: 'none',
                         background: 'var(--surface-1)',
                         border: '1px solid var(--border)',
-                        borderRadius: 8,
-                        padding: '8px 10px',
-                        boxShadow: '0 4px 14px rgba(0,0,0,0.10)',
-                        minWidth: 120,
+                        borderRadius: 14,
+                        padding: '11px 14px',
+                        boxShadow: 'var(--shadow)',
+                        minWidth: 140,
                     }}
                 >
                     <div
                         style={{
                             display: 'flex',
                             alignItems: 'center',
-                            gap: 7,
-                            fontSize: 15,
-                            fontWeight: 600,
+                            gap: 8,
+                            fontSize: 20,
+                            fontWeight: 800,
                             color: 'var(--text-primary)',
                         }}
                     >
                         <span
                             style={{
-                                width: 12,
-                                height: 2,
+                                width: 14,
+                                height: 3,
                                 borderRadius: 2,
                                 background: color,
                                 flex: 'none',
                             }}
                         />
                         {fmt(cur.v)}
-                        <span style={{ fontSize: 12, fontWeight: 400, color: 'var(--text-muted)' }}>
+                        <span style={{ fontSize: 15, fontWeight: 600, color: 'var(--text-muted)' }}>
                             {unit}
                         </span>
                     </div>
-                    <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 2 }}>
+                    <div style={{ fontSize: 14, color: 'var(--text-secondary)', marginTop: 3 }}>
                         {new Date(cur.t).toLocaleString([], {
                             day: 'numeric',
                             month: 'short',

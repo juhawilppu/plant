@@ -28,9 +28,9 @@ Postgres          devices  one row per node, holds the soil calibration
                   readings append-only log, deduplicated on (device_id, msg_id)
         ^
         |
-server/index.js   Express: GET /api/readings, GET /api/devices,
-        |         POST /api/readings (kept for curl and as a fallback),
-        |         and serves the built dashboard
+server/index.js   Express: GET /api/readings, GET /api/history (bucketed),
+        |         GET /api/devices, POST /api/readings (kept for curl and as
+        |         a fallback), and serves the built dashboard
         v
 web/              Vite + React, hand-rolled SVG charts
 ```
@@ -269,17 +269,33 @@ rather than the return code.
 
 ## The dashboard
 
-Four measures, four single-series charts, one hero number. Deliberate choices
-worth not undoing:
+Two pages, and the split is the design. **Now** (`/`) answers "does the plant
+need anything?"; **the long view** (`#/history`) answers "what has been
+happening?". Every measure appears exactly once on each, in the form that page
+needs - the same number never gets a tile *and* a chart on one screen.
 
+- **Now** is the last 48 hours: one hero figure, four stat tiles, and a
+  sparkline under each as a trend cue only. Anything with axes lives on the
+  other page. 48 hours because that is the window where a reading still implies
+  an action - long enough to show last night as well as this one.
+- **The long view** is 1 / 3 / 6 / 12 months or all time, bucketed server-side by
+  `GET /api/history`. A year is ~105k rows, so the server sends one average per
+  bucket with that bucket's low and high, and the chart draws the average as the
+  line and the spread as a band behind it.
+- **Buckets snap to whole days past a fortnight.** A sub-day bucket still
+  straddles the day/night cycle, so the line keeps swinging mark to mark and
+  fills in solid once the marks are a pixel apart. At daily buckets the line is
+  the daily mean, which actually trends, and the swing moves into the band.
 - **No dual-axis charts.** Temperature and humidity are different scales, so they
   are different charts. Two y-axes on one plot is the single most misleading
   thing a monitoring dashboard can do.
 - **One hero figure**, soil moisture, because it is the only reading that implies
-  an action. The verdict beside it ships an icon *and* words, never colour alone.
-- **A table view is always one click away**, and every chart carries a direct
-  end-label. The light-mode aqua and yellow sit below 3:1 against the surface, so
-  that relief is required rather than decorative.
+  an action. The verdict beside it ships an icon *and* words, never colour alone,
+  and it does not appear at all until there is a reading to have a verdict about.
+- **No value is encoded by hue alone.** The light-mode aqua and yellow sit below
+  3:1 against the surface, so that relief is required rather than decorative: on
+  *now* every measure states its value as text beside its colour key, and on the
+  long view every chart carries a direct end-label.
 - **Charts hold their previous render at reduced opacity while refetching** - no
   skeleton flash, no layout jump.
 - Colours are the first four slots of a validated categorical palette, fixed per

@@ -9,6 +9,11 @@ import useWidth, { segmentsOf } from './useWidth.js';
 // Always a SINGLE series, so there is no legend - the card's title names what is
 // plotted, and a one-swatch legend would only restate it. Two measures never
 // share these axes: a second y-scale is the one thing this file will not do.
+//
+// A point may carry `lo`/`hi` as well as `v`. That is the long-term view, where
+// each mark is an average over hours or days: the band behind the line is the
+// spread that average hides, drawn in the same hue so it reads as the same
+// series rather than as a second one.
 
 const PAD = { top: 18, right: 70, bottom: 32, left: 56 };
 
@@ -36,6 +41,11 @@ function formatTime(iso, spanHours) {
     if (spanHours <= 48) {
         return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     }
+    // Past a few months the day of the month stops carrying information and the
+    // year starts to, so the label widens rather than repeating "3 Mar".
+    if (spanHours > 24 * 120) {
+        return d.toLocaleDateString([], { month: 'short', year: 'numeric' });
+    }
     return d.toLocaleDateString([], { day: 'numeric', month: 'short' });
 }
 
@@ -43,11 +53,12 @@ export default function TimeSeries({
     title,
     unit,
     color,
-    points, // [{ t: ISO string, v: number | null }]
+    points, // [{ t: ISO string, v: number | null, lo?: number, hi?: number }]
     spanHours,
     decimals = 1,
     height = 200,
     markers = [], // [{ index, label }] - events worth naming on the x axis
+    bandLabel = 'low to high', // what lo/hi mean, for the tooltip and the label
     pending = false, // first fetch still in flight: no data, and no claim either
     className = '',
 }) {
@@ -56,8 +67,18 @@ export default function TimeSeries({
 
     const withValues = useMemo(() => points.filter((p) => p.v != null), [points]);
 
+    const hasBand = useMemo(
+        () => points.some((p) => p.lo != null && p.hi != null),
+        [points],
+    );
+
     const { lo, hi, ticks } = useMemo(() => {
-        const vals = withValues.map((p) => p.v);
+        const vals = [];
+        for (const p of withValues) {
+            vals.push(p.v);
+            if (p.lo != null) vals.push(p.lo);
+            if (p.hi != null) vals.push(p.hi);
+        }
         return niceScale(Math.min(...vals), Math.max(...vals));
     }, [withValues]);
 
@@ -74,6 +95,33 @@ export default function TimeSeries({
     );
 
     const segments = useMemo(() => segmentsOf(points, x, y), [points, x, y]);
+
+    // The band breaks exactly where the line does: a bucket with no samples has
+    // no average and no spread either, so neither is drawn across the gap.
+    const bandPaths = useMemo(() => {
+        if (!hasBand) return [];
+        const runs = [];
+        let run = [];
+        points.forEach((p, i) => {
+            if (p.lo == null || p.hi == null) {
+                if (run.length) runs.push(run);
+                run = [];
+            } else {
+                run.push([x(i), y(p.hi), y(p.lo)]);
+            }
+        });
+        if (run.length) runs.push(run);
+        return runs.map(
+            (seg) =>
+                seg.map(([px, yh], j) => `${j ? 'L' : 'M'} ${px} ${yh}`).join(' ') +
+                ' ' +
+                [...seg]
+                    .reverse()
+                    .map(([px, , yl]) => `L ${px} ${yl}`)
+                    .join(' ') +
+                ' Z',
+        );
+    }, [points, x, y, hasBand]);
 
     const lastIdx = useMemo(() => {
         for (let i = points.length - 1; i >= 0; i--) if (points[i].v != null) return i;
@@ -133,7 +181,10 @@ export default function TimeSeries({
                 height={height}
                 viewBox={`0 0 ${width} ${height}`}
                 role="img"
-                aria-label={`${title} over the selected range. Latest ${fmt(points[lastIdx]?.v)} ${unit}.`}
+                aria-label={
+                    `${title} over the selected range. Latest ${fmt(points[lastIdx]?.v)} ${unit}.` +
+                    (hasBand ? ` The shaded band is each point's ${bandLabel}.` : '')
+                }
                 tabIndex={0}
                 onPointerMove={onPointer}
                 onPointerLeave={() => setCursor(null)}
@@ -172,18 +223,23 @@ export default function TimeSeries({
                     </g>
                 ))}
 
-                {/* Area wash under each segment - a tint, never a solid block. */}
-                {segments.map((seg, i) => (
-                    <path
-                        key={`a${i}`}
-                        d={
-                            `M ${seg[0][0]} ${PAD.top + plotH} ` +
-                            seg.map(([px, py]) => `L ${px} ${py}`).join(' ') +
-                            ` L ${seg[seg.length - 1][0]} ${PAD.top + plotH} Z`
-                        }
-                        fill={`url(#${washId})`}
-                    />
-                ))}
+                {/* The band replaces the wash rather than joining it: two tints of
+                    the same hue stacked would read as a third value. */}
+                {hasBand
+                    ? bandPaths.map((d, i) => (
+                          <path key={`b${i}`} d={d} fill={color} fillOpacity="0.17" />
+                      ))
+                    : segments.map((seg, i) => (
+                          <path
+                              key={`a${i}`}
+                              d={
+                                  `M ${seg[0][0]} ${PAD.top + plotH} ` +
+                                  seg.map(([px, py]) => `L ${px} ${py}`).join(' ') +
+                                  ` L ${seg[seg.length - 1][0]} ${PAD.top + plotH} Z`
+                              }
+                              fill={`url(#${washId})`}
+                          />
+                      ))}
 
                 {segments.map((seg, i) => (
                     <path
@@ -335,12 +391,25 @@ export default function TimeSeries({
                             {unit}
                         </span>
                     </div>
+                    {cur.lo != null && cur.hi != null ? (
+                        <div
+                            style={{
+                                fontSize: 15,
+                                fontWeight: 600,
+                                color: 'var(--text-secondary)',
+                                marginTop: 2,
+                            }}
+                        >
+                            {fmt(cur.lo)}–{fmt(cur.hi)} {bandLabel}
+                        </div>
+                    ) : null}
                     <div style={{ fontSize: 14, color: 'var(--text-secondary)', marginTop: 3 }}>
                         {new Date(cur.t).toLocaleString([], {
                             day: 'numeric',
                             month: 'short',
-                            hour: '2-digit',
-                            minute: '2-digit',
+                            hour: spanHours > 24 * 7 ? undefined : '2-digit',
+                            minute: spanHours > 24 * 7 ? undefined : '2-digit',
+                            year: spanHours > 24 * 120 ? 'numeric' : undefined,
                         })}
                     </div>
                 </div>

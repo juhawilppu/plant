@@ -145,6 +145,139 @@ app.get('/api/readings', async (req, res) => {
     });
 });
 
+// The long-term view asks for months at a time, and months of five-minute
+// samples are the one thing this API cannot just hand over: a year is ~105,000
+// rows, far more than the wire wants to carry and far more than a chart a
+// thousand pixels wide can draw. So the server buckets, and sends back the
+// average of each bucket together with its low and high - the spread is the
+// part a mean would quietly destroy, and over a day it is most of the story.
+const BUCKET_LADDER_S = [
+    300, // 5 min - the node's own cadence, so no aggregation at all
+    900,
+    1800,
+    3600,
+    3 * 3600,
+    6 * 3600,
+    12 * 3600,
+    86400,
+    2 * 86400,
+    3 * 86400,
+    7 * 86400,
+];
+
+// Few enough marks that the smallest of the four cards, about 340px of plot,
+// still has room between them. Overshoot this and neighbouring marks land on
+// the same pixel column, which is where a line stops being a line.
+const MAX_BUCKETS = 200;
+
+// Any bucket shorter than a day still straddles the day/night cycle, so the
+// line keeps swinging from mark to mark - and once the marks are a pixel apart
+// that swing fills in solid and the trend underneath it disappears. Past a
+// couple of weeks the bucket therefore snaps to whole days: the line becomes
+// the daily mean, which is smooth and actually trends, and the swing it used to
+// draw moves into the band, which is what the band is for.
+const DAY_BUCKET_FLOOR_S = 14 * 86400;
+
+const HISTORY_RANGES = { '1m': 30, '3m': 91, '6m': 182, '12m': 365, all: null };
+
+function bucketFor(spanSeconds) {
+    const ladder =
+        spanSeconds > DAY_BUCKET_FLOOR_S
+            ? BUCKET_LADDER_S.filter((s) => s >= 86400)
+            : BUCKET_LADDER_S;
+    return (
+        ladder.find((s) => spanSeconds / s <= MAX_BUCKETS) ?? ladder[ladder.length - 1]
+    );
+}
+
+app.get('/api/history', async (req, res) => {
+    const device = req.query.device || 'plant-01';
+    const range = String(req.query.range ?? '3m');
+    if (!(range in HISTORY_RANGES)) {
+        return res.status(400).json({ error: `unknown range: ${range}` });
+    }
+
+    const dev = await pool.query(
+        'select soil_raw_air, soil_raw_water from devices where device_id = $1',
+        [device],
+    );
+    if (dev.rowCount === 0) return res.status(404).json({ error: 'unknown device' });
+    const { soil_raw_air, soil_raw_water } = dev.rows[0];
+
+    // "All time" cannot pick a bucket until it knows how far back the history
+    // actually goes, so the bounds are fetched first. The fixed ranges want the
+    // same row anyway, to tell the dashboard when recording started.
+    const bounds = await pool.query(
+        'select min(recorded_at) as first from readings where device_id = $1',
+        [device],
+    );
+    const firstReading = bounds.rows[0].first;
+
+    const to = new Date();
+    const days = HISTORY_RANGES[range];
+    const from =
+        range === 'all'
+            ? (firstReading ?? to)
+            : new Date(to.getTime() - days * 86400 * 1000);
+
+    // A brand-new device has no span at all; one bucket's worth keeps the
+    // ladder from dividing by zero.
+    const spanSeconds = Math.max(300, (to.getTime() - new Date(from).getTime()) / 1000);
+    const bucketSeconds = bucketFor(spanSeconds);
+
+    const { rows } = await pool.query(
+        `select to_timestamp(floor(extract(epoch from recorded_at) / $3) * $3) as t,
+                count(*)::int                as n,
+                avg(soil_raw)::float8        as soil_raw_avg,
+                min(soil_raw)                as soil_raw_min,
+                max(soil_raw)                as soil_raw_max,
+                avg(air_temp_c)::float8      as air_temp_c_avg,
+                min(air_temp_c)              as air_temp_c_min,
+                max(air_temp_c)              as air_temp_c_max,
+                avg(humidity_pct)::float8    as humidity_pct_avg,
+                min(humidity_pct)            as humidity_pct_min,
+                max(humidity_pct)            as humidity_pct_max,
+                avg(lux)::float8             as lux_avg,
+                min(lux)                     as lux_min,
+                max(lux)                     as lux_max
+           from readings
+          where device_id = $1
+            and recorded_at >= $2
+          group by 1
+          order by 1`,
+        [device, from, bucketSeconds],
+    );
+
+    res.json({
+        device,
+        range,
+        bucketSeconds,
+        from,
+        to,
+        firstReading,
+        calibrated: soil_raw_air != null && soil_raw_water != null,
+        buckets: rows.map((r) => ({
+            t: r.t,
+            n: r.n,
+            // The raw soil scale runs backwards - a capacitive probe reads lower
+            // the wetter it gets - so the bucket's driest sample is its highest
+            // raw value, and min and max swap places on the way through.
+            soil_pct_avg: soilPercent(r.soil_raw_avg, soil_raw_air, soil_raw_water),
+            soil_pct_min: soilPercent(r.soil_raw_max, soil_raw_air, soil_raw_water),
+            soil_pct_max: soilPercent(r.soil_raw_min, soil_raw_air, soil_raw_water),
+            air_temp_c_avg: r.air_temp_c_avg,
+            air_temp_c_min: r.air_temp_c_min,
+            air_temp_c_max: r.air_temp_c_max,
+            humidity_pct_avg: r.humidity_pct_avg,
+            humidity_pct_min: r.humidity_pct_min,
+            humidity_pct_max: r.humidity_pct_max,
+            lux_avg: r.lux_avg,
+            lux_min: r.lux_min,
+            lux_max: r.lux_max,
+        })),
+    });
+});
+
 // In production the built dashboard is served by this same process, so there is
 // one container and no CORS. In development Vite serves it on 5173 and proxies
 // /api here instead, so this directory simply does not exist yet.

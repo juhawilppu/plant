@@ -1,12 +1,16 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import TimeSeries from './TimeSeries.jsx';
+import History from './History.jsx';
 import Sparkline from './Sparkline.jsx';
 
-const RANGES = [
-    { label: '24 hours', hours: 24 },
-    { label: '7 days', hours: 24 * 7 },
-    { label: '30 days', hours: 24 * 30 },
-];
+// Two pages, and the split is the whole design. This one is "how is the plant
+// right now?": every measure appears exactly once, as a big current number with
+// the last two days of shape under it. Anything that needs a chart with axes
+// belongs to the other page, behind the history link at the bottom.
+//
+// 48 hours because that is the window where a reading still implies an action.
+// It is long enough to show last night as well as this one, and short enough
+// that a dry-down still looks like a slope rather than a flat line.
+const LIVE_HOURS = 48;
 
 const SERIES = {
     soil: 'var(--series-soil)',
@@ -70,7 +74,7 @@ function freshnessColor(iso, now) {
 
 // Soil moisture that climbs more than five points between consecutive samples
 // is a watering, not weather - nothing else moves the probe that fast. Only the
-// most recent one is marked; older steps are history the chart already shows.
+// most recent one is named, in words, in the hero note.
 const WATERING_JUMP_PCT = 5;
 
 function findWatering(readings) {
@@ -82,6 +86,18 @@ function findWatering(readings) {
         }
     }
     return null;
+}
+
+// Real links, not buttons: the back button, middle-click and a pasted URL all
+// then work the way a reader expects, for the price of one hashchange listener.
+function useHashRoute() {
+    const [hash, setHash] = useState(() => window.location.hash);
+    useEffect(() => {
+        const onChange = () => setHash(window.location.hash);
+        window.addEventListener('hashchange', onChange);
+        return () => window.removeEventListener('hashchange', onChange);
+    }, []);
+    return hash === '#/history' ? 'history' : 'live';
 }
 
 function Icon({ name, color, size = 20 }) {
@@ -167,19 +183,20 @@ function Tile({ label, color, value, unit, decimals = 1, points, pending }) {
 }
 
 export default function App() {
-    const [hours, setHours] = useState(24);
+    const route = useHashRoute();
     const [data, setData] = useState(null);
     const [devices, setDevices] = useState([]);
-    const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
-    const [showTable, setShowTable] = useState(false);
+    const [tick, setTick] = useState(0);
     const [now, setNow] = useState(() => Date.now());
 
+    // Fetched on both pages: the history view has its own aggregates, but the
+    // header's "last reading 4 min ago" is about the node being alive, which is
+    // just as worth knowing while looking backwards.
     useEffect(() => {
         let cancelled = false;
-        setLoading(true);
         Promise.all([
-            fetch(`/api/readings?device=plant-01&hours=${hours}`).then((r) => r.json()),
+            fetch(`/api/readings?device=plant-01&hours=${LIVE_HOURS}`).then((r) => r.json()),
             fetch('/api/devices').then((r) => r.json()),
         ])
             .then(([readings, devs]) => {
@@ -188,17 +205,16 @@ export default function App() {
                 setDevices(devs);
                 setError(null);
             })
-            .catch((e) => !cancelled && setError(e.message))
-            .finally(() => !cancelled && setLoading(false));
+            .catch((e) => !cancelled && setError(e.message));
         return () => {
             cancelled = true;
         };
-    }, [hours]);
+    }, [tick]);
 
     // Poll at the node's own cadence. Any faster only re-fetches rows that
     // cannot have changed.
     useEffect(() => {
-        const id = setInterval(() => setHours((h) => h), 5 * 60 * 1000);
+        const id = setInterval(() => setTick((t) => t + 1), 5 * 60 * 1000);
         return () => clearInterval(id);
     }, []);
 
@@ -209,12 +225,9 @@ export default function App() {
         return () => clearInterval(id);
     }, []);
 
-    // Two different "loading"s. `pending` is the first fetch, when the page
-    // knows nothing and must not assert anything; `refetching` is a range
-    // change, where the previous render is still true and is simply held at
-    // reduced opacity rather than replaced by placeholders.
+    // The first fetch, when the page knows nothing and must not assert
+    // anything - not "no readings", not "not calibrated".
     const pending = data == null && error == null;
-    const refetching = loading && data != null;
 
     const readings = data?.readings ?? [];
     const latest = readings.length ? readings[readings.length - 1] : null;
@@ -281,7 +294,7 @@ export default function App() {
                         }}
                     />
                     {pending
-                        ? 'Checking\u2026'
+                        ? 'Checking…'
                         : error && data == null
                           ? 'Unavailable'
                           : latest
@@ -297,171 +310,139 @@ export default function App() {
                 </div>
             ) : null}
 
-            {error && data == null ? null : (
-              <>
-            <div className={`hero-card ${refetching ? 'reloading' : ''}`}>
-                <div className="hero">
-                    <div>
-                        <div className="hero-label">Soil moisture</div>
-                        <div className="hero-value">
-                            {pending ? (
-                                <span className="skeleton skel-hero" />
-                            ) : latest?.soil_pct == null ? (
-                                '—'
-                            ) : (
-                                `${latest.soil_pct.toFixed(0)}%`
+            {route === 'history' ? (
+                <>
+                    <div className="view-switch">
+                        <a className="pagelink" href="#/">
+                            <span aria-hidden="true">←</span> Back to now
+                        </a>
+                        <h2 className="view-title">The long view</h2>
+                    </div>
+                    <History device={data?.device ?? 'plant-01'} series={SERIES} />
+                </>
+            ) : error && data == null ? null : (
+                <>
+                    <div className="hero-card">
+                        <div className="hero">
+                            <div>
+                                <div className="hero-label">Soil moisture</div>
+                                {/* With no reading at all there is no value slot
+                                    either: an em dash at 132px is a white bar,
+                                    which reads as a skeleton that never resolved
+                                    rather than as "nothing to report". The
+                                    sentence below says it in words instead. */}
+                                {pending ? (
+                                    <div className="hero-value">
+                                        <span className="skeleton skel-hero" />
+                                    </div>
+                                ) : latest == null ? null : (
+                                    <div className="hero-value">
+                                        {latest.soil_pct == null
+                                            ? '—'
+                                            : `${latest.soil_pct.toFixed(0)}%`}
+                                    </div>
+                                )}
+                            </div>
+                            {/* No verdict until there is a reading to have one
+                                about - an empty window is not a dry plant, and
+                                it is not an uncalibrated probe either. */}
+                            {pending || latest == null ? null : (
+                                <span className="verdict">
+                                    <Icon name={verdict.icon} color={verdict.color} />
+                                    {verdict.text}
+                                </span>
                             )}
                         </div>
+
+                        {pending ? (
+                            <div className="meter">
+                                <div style={{ width: 0 }} />
+                            </div>
+                        ) : latest == null ? (
+                            <div className="hero-aside">
+                                Nothing has arrived in the last {LIVE_HOURS} hours. Either the
+                                node has stopped publishing, or it has not been running that
+                                long yet.
+                            </div>
+                        ) : latest.soil_pct != null ? (
+                            <>
+                                <div className="meter">
+                                    <div
+                                        style={{
+                                            width: `${Math.max(2, latest.soil_pct)}%`,
+                                            background: verdict.color,
+                                        }}
+                                    />
+                                </div>
+                                {/* The lead measure gets the same trend cue the tiles
+                                    get, so dropping the chart grid does not cost the
+                                    dry-down its shape. */}
+                                <div className="hero-spark">
+                                    <Sparkline
+                                        points={series.soil}
+                                        color={SERIES.soil}
+                                        ring="var(--surface-hero)"
+                                    />
+                                </div>
+                                {heroNote ? <div className="hero-note">{heroNote}</div> : null}
+                            </>
+                        ) : (
+                            <div className="hero-aside">
+                                The probe has no calibration yet, so a percentage would be
+                                meaningless. Record the raw value in air and in water, then set{' '}
+                                <code>soil_raw_air</code> and <code>soil_raw_water</code> on the
+                                device row. Latest raw reading:{' '}
+                                <strong>{latest?.soil_raw ?? '—'}</strong>.
+                            </div>
+                        )}
                     </div>
-                    {/* No verdict until there is a reading to have one about. */}
-                    {pending ? null : (
-                        <span className="verdict">
-                            <Icon name={verdict.icon} color={verdict.color} />
-                            {verdict.text}
+
+                    <div className="tiles">
+                        <Tile
+                            label="Air temperature"
+                            color={SERIES.temp}
+                            value={latest?.air_temp_c ?? null}
+                            unit="°C"
+                            points={series.temp}
+                            pending={pending}
+                        />
+                        <Tile
+                            label="Humidity"
+                            color={SERIES.humidity}
+                            value={latest?.humidity_pct ?? null}
+                            unit="%"
+                            points={series.humidity}
+                            pending={pending}
+                        />
+                        <Tile
+                            label="Light"
+                            color={SERIES.light}
+                            value={latest?.lux ?? null}
+                            unit="lux"
+                            decimals={0}
+                            points={series.light}
+                            pending={pending}
+                        />
+                        <Tile
+                            label="WiFi signal"
+                            color={SERIES.rssi}
+                            value={latest?.rssi ?? null}
+                            unit="dBm"
+                            decimals={0}
+                            points={series.rssi}
+                            pending={pending}
+                        />
+                    </div>
+
+                    <div className="live-foot">
+                        <span className="live-foot-note">
+                            Everything above is the last {LIVE_HOURS} hours.
                         </span>
-                    )}
-                </div>
-
-                {pending ? (
-                    <div className="meter">
-                        <div style={{ width: 0 }} />
+                        <a className="pagelink pagelink-strong" href="#/history">
+                            Look back further <span aria-hidden="true">→</span>
+                        </a>
                     </div>
-                ) : latest?.soil_pct != null ? (
-                    <>
-                        <div className="meter">
-                            <div
-                                style={{
-                                    width: `${Math.max(2, latest.soil_pct)}%`,
-                                    background: verdict.color,
-                                }}
-                            />
-                        </div>
-                        {heroNote ? <div className="hero-note">{heroNote}</div> : null}
-                    </>
-                ) : (
-                    <div className="calibration">
-                        The probe has no calibration yet, so a percentage would be meaningless.
-                        Record the raw value in air and in water, then set{' '}
-                        <code>soil_raw_air</code> and <code>soil_raw_water</code> on the device
-                        row. Latest raw reading: <strong>{latest?.soil_raw ?? '—'}</strong>.
-                    </div>
-                )}
-            </div>
-
-            <div className="tiles">
-                <Tile
-                    label="Air temperature"
-                    color={SERIES.temp}
-                    value={latest?.air_temp_c ?? null}
-                    unit="°C"
-                    points={series.temp}
-                    pending={pending}
-                />
-                <Tile
-                    label="Humidity"
-                    color={SERIES.humidity}
-                    value={latest?.humidity_pct ?? null}
-                    unit="%"
-                    points={series.humidity}
-                    pending={pending}
-                />
-                <Tile
-                    label="Light"
-                    color={SERIES.light}
-                    value={latest?.lux ?? null}
-                    unit="lux"
-                    decimals={0}
-                    points={series.light}
-                    pending={pending}
-                />
-                <Tile
-                    label="WiFi signal"
-                    color={SERIES.rssi}
-                    value={latest?.rssi ?? null}
-                    unit="dBm"
-                    decimals={0}
-                    points={series.rssi}
-                    pending={pending}
-                />
-            </div>
-
-            <div className="filters">
-                {RANGES.map((r) => (
-                    <button
-                        key={r.hours}
-                        aria-pressed={hours === r.hours}
-                        onClick={() => setHours(r.hours)}
-                    >
-                        {r.label}
-                    </button>
-                ))}
-                <div className="spacer" />
-                <button aria-pressed={showTable} onClick={() => setShowTable((s) => !s)}>
-                    {showTable ? 'Hide table' : 'Table view'}
-                </button>
-            </div>
-
-            <div className={`grid ${refetching ? 'reloading' : ''}`}>
-                <TimeSeries
-                    className="span-2"
-                    title="Soil moisture"
-                    unit="%"
-                    color={SERIES.soil}
-                    points={series.soil}
-                    spanHours={hours}
-                    decimals={0}
-                    height={250}
-                    markers={watering ? [{ index: watering.index, label: 'watered' }] : []}
-                    pending={pending}
-                />
-                <TimeSeries title="Air temperature" unit="°C" color={SERIES.temp} points={series.temp} spanHours={hours} pending={pending} />
-                <TimeSeries title="Humidity" unit="%" color={SERIES.humidity} points={series.humidity} spanHours={hours} pending={pending} />
-                <TimeSeries title="Light" unit="lux" color={SERIES.light} points={series.light} spanHours={hours} decimals={0} pending={pending} />
-            </div>
-
-            {showTable && !pending ? (
-                <div className="card" style={{ marginTop: 16 }}>
-                    <div className="tile-label">All readings in this range</div>
-                    <div className="table-scroll">
-                        <table>
-                            <thead>
-                                <tr>
-                                    <th>Time</th>
-                                    <th>Soil %</th>
-                                    <th>Soil raw</th>
-                                    <th>Temp °C</th>
-                                    <th>Humidity %</th>
-                                    <th>Light lux</th>
-                                    <th>hPa</th>
-                                    <th>dBm</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                {[...readings].reverse().map((r) => (
-                                    <tr key={r.recorded_at}>
-                                        <td>
-                                            {new Date(r.recorded_at).toLocaleString([], {
-                                                day: 'numeric',
-                                                month: 'short',
-                                                hour: '2-digit',
-                                                minute: '2-digit',
-                                            })}
-                                        </td>
-                                        <td>{r.soil_pct ?? '—'}</td>
-                                        <td>{r.soil_raw ?? '—'}</td>
-                                        <td>{r.air_temp_c?.toFixed(1) ?? '—'}</td>
-                                        <td>{r.humidity_pct?.toFixed(1) ?? '—'}</td>
-                                        <td>{r.lux?.toFixed(0) ?? '—'}</td>
-                                        <td>{r.pressure_hpa?.toFixed(0) ?? '—'}</td>
-                                        <td>{r.rssi ?? '—'}</td>
-                                    </tr>
-                                ))}
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-            ) : null}
-              </>
+                </>
             )}
         </div>
     );

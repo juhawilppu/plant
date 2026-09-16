@@ -1,15 +1,18 @@
 import React, { useCallback, useMemo } from 'react';
 import useWidth, { segmentsOf } from './useWidth.js';
 
-// The shape of a tile's last 24 hours, with no axes and no readable values -
+// The shape of a tile's last two days, with no axes and no readable values -
 // the tile's own big number carries the value. Purely a trend cue, so it is
-// aria-hidden: every number it hints at is already in the tile above it and in
-// the table view.
+// aria-hidden: the current value is already stated above it, and every number
+// behind the shape is readable on the history page.
 
 const HEIGHT = 46;
 const PAD = { top: 6, right: 8, bottom: 6 };
 
-export default function Sparkline({ points, color }) {
+// `ring` is the surface the end dot sits on. It defaults to the card white, and
+// the hero passes its own green: a white ring on the green hero would read as a
+// deliberate halo rather than as the dot lifting off its background.
+export default function Sparkline({ points, color, ring = 'var(--surface-1)' }) {
     const [hostRef, width] = useWidth(200, 80);
     // The colour arrives as `var(--series-temp)`, which is not a legal id, so
     // the gradient is keyed on a stripped copy of it.
@@ -87,7 +90,7 @@ export default function Sparkline({ points, color }) {
                             cy={y(points[lastIdx].v)}
                             r="4"
                             fill={color}
-                            stroke="var(--surface-1)"
+                            stroke={ring}
                             strokeWidth="2"
                         />
                     ) : null}

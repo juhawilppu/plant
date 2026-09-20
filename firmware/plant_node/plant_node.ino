@@ -206,6 +206,16 @@ void setup() {
 
     Wire.begin(SDA_PIN, SCL_PIN);
 
+    // TEMPORARY: raw bus scan to debug AHT20 not being found, independent of
+    // whatever init sequence Adafruit_AHTX0::begin() sends. Remove once solved.
+    Serial.println("I2C scan:");
+    for (uint8_t addr = 1; addr < 127; addr++) {
+        Wire.beginTransmission(addr);
+        if (Wire.endTransmission() == 0) {
+            Serial.printf("  found device at 0x%02X\n", addr);
+        }
+    }
+
     haveAht = aht.begin();
     Serial.printf("AHT20:  %s\n", haveAht ? "ok" : "NOT FOUND");
 
@@ -244,9 +254,16 @@ void publishReading() {
 
     if (haveAht) {
         sensors_event_t humidityEvent, tempEvent;
-        aht.getEvent(&humidityEvent, &tempEvent);
-        tempC = tempEvent.temperature;
-        humidity = humidityEvent.relative_humidity;
+        // A read can fail even after a successful begin() - e.g. if something
+        // else on the shared I2C bus wedges it in between. Treat that the
+        // same as "sensor absent" rather than publishing whatever garbage was
+        // left on the stack in the unfilled event structs.
+        if (aht.getEvent(&humidityEvent, &tempEvent)) {
+            tempC = tempEvent.temperature;
+            humidity = humidityEvent.relative_humidity;
+        } else {
+            Serial.println("AHT20: read failed, skipping this cycle");
+        }
     }
     // Air temperature comes from the AHT20; the BMP280 is only asked for
     // pressure, because its own temperature reading runs warm from self-heating.

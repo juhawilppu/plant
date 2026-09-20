@@ -7,7 +7,7 @@ COPY package.json package-lock.json* ./
 RUN npm install --omit=dev
 
 # All of the server's modules, not just index.js: mqtt-bridge.js is imported at
-# startup, and seed-demo.js / fake-node.js are useful to run inside the
+# startup, and seed-demo.js is useful to run inside the
 # container when debugging on the server.
 COPY *.js ./
 

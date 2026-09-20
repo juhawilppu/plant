@@ -42,9 +42,13 @@ app.use(express.json({ limit: '8kb' }));
 function soilPercent(raw, air, water) {
     if (raw == null || air == null || water == null || air === water) return null;
     const pct = ((air - raw) / (air - water)) * 100;
-    // Clamped because soil wetter than the calibration water point, or a probe
-    // lifted clear of the pot, would otherwise report beyond 0-100.
-    return Math.round(Math.max(0, Math.min(100, pct)) * 10) / 10;
+    // soil_raw_water is calibrated from the wettest soil actually observed, not
+    // a glass of water - soil never gets as saturated as full submersion, so
+    // pinning 100% there would compress the whole real range toward the dry
+    // end. A reading wetter than anything seen so far (right after watering)
+    // is real and allowed to show past 100%, rather than being clamped away.
+    // The dry end still floors at 0: nothing is drier than "no water at all".
+    return Math.round(Math.max(0, pct) * 10) / 10;
 }
 
 app.get('/health', async (_req, res) => {

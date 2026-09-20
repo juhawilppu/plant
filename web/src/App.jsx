@@ -26,7 +26,7 @@ const SERIES = {
 function verdictFor(pct) {
     if (pct == null)
         return { text: 'Not calibrated', color: 'var(--text-muted)', icon: 'info', advice: null };
-    if (pct < 25)
+    if (pct < 20)
         return {
             text: 'Needs water',
             color: 'var(--status-critical)',
@@ -369,7 +369,11 @@ export default function App() {
                                 <div className="meter">
                                     <div
                                         style={{
-                                            width: `${Math.max(2, latest.soil_pct)}%`,
+                                            // The number can read past 100% (see
+                                            // soilPercent in server/index.js), but the
+                                            // bar is a fraction of its own box and has
+                                            // nowhere to go past full width.
+                                            width: `${Math.min(100, Math.max(2, latest.soil_pct))}%`,
                                             background: verdict.color,
                                         }}
                                     />

@@ -55,7 +55,7 @@ rather than what it relieves:
 QoS 1 is at-least-once, so the broker may redeliver and the same reading can
 arrive twice. That is what `msg_id` and the unique index on
 `(device_id, msg_id)` are for: the insert is idempotent, and a duplicate is a
-no-op rather than a second row. `server/fake-node.js --duplicate` exercises it.
+no-op rather than a second row.
 
 The bridge trusts the **topic** for device identity, not the `device_id` in the
 payload, because the ACL is written in terms of topics - trusting the body would
@@ -92,71 +92,6 @@ cd web && npm install && npm run dev   # dashboard on :5173, proxies /api to 809
 
 For a production-shaped run instead, `npm run build` in `web/` and the API serves
 the built dashboard itself at `http://localhost:8090/`.
-
-### Faking a node
-
-`server/fake-node.js` publishes to MQTT exactly as the firmware will - same
-topics, same QoS 1, same Last Will, same `msg_id` counter - so the whole path can
-be tested with no hardware:
-
-```sh
-export MQTT_NODE_PASSWORD=$(ssh root@185.14.186.98 \
-    'grep ^MQTT_NODE_PASSWORD /opt/plant-vitals/.env | cut -d= -f2')
-
-H=mqtts://mqtt.juhawilppu.com:8883
-node server/fake-node.js --host $H                  # one reading
-node server/fake-node.js --host $H --interval 5     # every 5s until Ctrl-C
-node server/fake-node.js --host $H --burst 288      # a day of readings, fast
-node server/fake-node.js --host $H --duplicate      # each sent twice with the
-                                                    # same msg_id: proves the dedup
-```
-
-### Keeping the dashboard alive before the hardware exists
-
-A LaunchAgent on the development Mac publishes one reading every five minutes,
-so the deployed dashboard has a moving trace to look at.
-
-```sh
-./install-agent.sh            # install or update, and start it
-./install-agent.sh --remove   # uninstall
-```
-
-**Why a LaunchAgent and not cron, and why it does not run from this directory.**
-macOS TCC denies *scheduled* jobs read access to `~/Documents`, `~/Desktop` and
-`~/Downloads`. Both were tried on this machine and both failed identically:
-
-```
-/bin/sh: .../publish-fake-reading.sh: Operation not permitted
-Sandbox: System Policy: bash(41161) deny(1) file-read-data /Users/.../plant-vitals/...
-```
-
-cron fired exactly on schedule and still could not read the script. The
-available fixes were granting Full Disk Access to cron or `/bin/sh` - a far
-broader permission than this job warrants - or keeping the executed copy
-somewhere TCC does not guard. `install-agent.sh` does the latter: it mirrors
-`publish-fake-reading.sh`, `server/fake-node.js` and `server/node_modules` into
-`~/Library/Application Support/plant-vitals` and points the agent there. **The
-repo stays the source of truth, so re-run `install-agent.sh` after editing
-either script** or the agent will keep running the old copy.
-
-Credentials come from `~/.config/plant-vitals/env` (mode 600, outside the repo)
-rather than an ssh fetch: a scheduled job has no ssh-agent, and 288 ssh
-connections a day to the server would be silly.
-
-One reading per invocation rather than `--interval`, because the scheduler owns
-the cadence: a crash then costs a single reading instead of silently ending the
-stream. Output goes to `~/Library/Logs/plant-vitals-fake-node.log`, truncated to
-the last 500 lines once it passes 1 MB; launchd's own capture of stdout and
-stderr sits beside it in `plant-vitals-agent.{out,err}.log`.
-
-Two things to remember:
-
-- **It only runs while the Mac is awake.** Gaps overnight are the laptop
-  sleeping, not the pipeline breaking. launchd does fire shortly after wake,
-  where cron would simply have missed the slot.
-- **Remove it when the real node starts publishing**, or it will interleave
-  invented readings with measured ones under the same `device_id`:
-  `./install-agent.sh --remove`
 
 Watching the live stream, which is the debugging ergonomics MQTT buys:
 
@@ -241,7 +176,7 @@ Two MQTT accounts, with deliberately asymmetric rights (`mosquitto/config/acl`):
 
 | User | Rights | Used by |
 |---|---|---|
-| `plantnode` | publish to `plants/#` only | the ESP32, and `fake-node.js` |
+| `plantnode` | publish to `plants/#` only | the ESP32 |
 | `bridge` | subscribe to `plants/#` only | the API process |
 
 Verified on the live broker: anonymous connections are refused, and `plantnode`
@@ -252,9 +187,9 @@ rather than the return code.
 ### What is still open
 
 1. **The firmware still speaks HTTP**, not MQTT. It needs `PubSubClient`, the
-   two topics, the Last Will and the `msg_id` counter that `fake-node.js`
-   already demonstrates, pointed at `mqtt.juhawilppu.com:8883` with the
-   Let's Encrypt root pinned via `setCACert()`.
+   two topics, the Last Will and the `msg_id` counter, pointed at
+   `mqtt.juhawilppu.com:8883` with the Let's Encrypt root pinned via
+   `setCACert()`.
 2. **Confirm Cloudflare's SSL/TLS mode is Full (strict), not Full.** Plain
    *Full* encrypts the Cloudflare-to-origin leg but accepts any certificate,
    including a self-signed or expired one, which leaves that leg

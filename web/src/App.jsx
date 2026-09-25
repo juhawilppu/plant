@@ -72,17 +72,28 @@ function freshnessColor(iso, now) {
     return 'var(--status-good)';
 }
 
-// Soil moisture that climbs more than five points between consecutive samples
-// is a watering, not weather - nothing else moves the probe that fast. Only the
-// most recent one is named, in words, in the hero note.
+// Soil moisture that climbs more than five points within five minutes is a
+// watering, not weather - nothing else moves the probe that fast. The rise is
+// measured across a window rather than between neighbouring samples, because at
+// one reading a minute a watering that soaks in over two minutes arrives as two
+// smaller steps. Only the most recent one is named, in words, in the hero note,
+// timed from the first reading of the rise.
 const WATERING_JUMP_PCT = 5;
+const WATERING_WINDOW_MS = 5 * 60 * 1000;
 
 function findWatering(readings) {
     for (let i = readings.length - 1; i > 0; i--) {
-        const prev = readings[i - 1].soil_pct;
         const cur = readings[i].soil_pct;
-        if (prev != null && cur != null && cur - prev > WATERING_JUMP_PCT) {
-            return { index: i, at: readings[i].recorded_at };
+        if (cur == null) continue;
+        const t = new Date(readings[i].recorded_at).getTime();
+        for (let j = i - 1; j >= 0; j--) {
+            if (t - new Date(readings[j].recorded_at).getTime() > WATERING_WINDOW_MS) break;
+            const prev = readings[j].soil_pct;
+            if (prev != null && cur - prev > WATERING_JUMP_PCT) {
+                let k = j + 1;
+                while (readings[k].soil_pct == null) k++;
+                return { index: k, at: readings[k].recorded_at };
+            }
         }
     }
     return null;

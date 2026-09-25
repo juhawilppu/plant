@@ -34,6 +34,12 @@ const pool = new pg.Pool({
 const app = express();
 app.use(express.json({ limit: '8kb' }));
 
+// Express 4 does not catch a promise rejected by an async handler, and on Node
+// 22 an unhandled rejection ends the process - so one failed query would take
+// the API and the MQTT bridge down together. Every async route goes through
+// this, and the error handler at the bottom turns the failure into a 500.
+const route = (fn) => (req, res, next) => fn(req, res).catch(next);
+
 // Created up front rather than by app.listen() at the bottom, because the live
 // hub shares it: the WebSocket upgrade arrives on the same port as the API.
 const server = createServer(app);
@@ -172,7 +178,7 @@ app.post('/api/readings', async (req, res) => {
     }
 });
 
-app.get('/api/devices', async (_req, res) => {
+app.get('/api/devices', route(async (_req, res) => {
     const { rows } = await pool.query(
         `select d.*,
                 (select recorded_at from readings r
@@ -181,12 +187,15 @@ app.get('/api/devices', async (_req, res) => {
            from devices d order by d.device_id`,
     );
     res.json(rows);
-});
+}));
 
-app.get('/api/readings', async (req, res) => {
+app.get('/api/readings', route(async (req, res) => {
     const device = req.query.device || 'plant-01';
-    // Clamped so a stray ?hours=999999 cannot ask Postgres for everything.
-    const hours = Math.min(Math.max(parseInt(req.query.hours ?? '24', 10) || 24, 1), 24 * 90);
+    // Clamped so a stray ?hours=999999 cannot ask Postgres for everything. A
+    // week is ~10,000 rows at one a minute; the dashboard asks for 48 hours, and
+    // anything longer belongs to /api/history, which buckets. The old 90-day cap
+    // let any anonymous request pull ~130,000 rows and ~22 MB of JSON.
+    const hours = Math.min(Math.max(parseInt(req.query.hours ?? '24', 10) || 24, 1), 24 * 7);
 
     const dev = await pool.query(
         'select soil_raw_air, soil_raw_water from devices where device_id = $1',
@@ -210,7 +219,7 @@ app.get('/api/readings', async (req, res) => {
         calibrated: soil_raw_air != null && soil_raw_water != null,
         readings: rows.map((r) => publicReading(r, soil_raw_air, soil_raw_water)),
     });
-});
+}));
 
 // The long-term view asks for months at a time, and months of one-minute
 // samples are the one thing this API cannot just hand over: a year is ~525,000
@@ -257,10 +266,11 @@ function bucketFor(spanSeconds) {
     );
 }
 
-app.get('/api/history', async (req, res) => {
+app.get('/api/history', route(async (req, res) => {
     const device = req.query.device || 'plant-01';
     const range = String(req.query.range ?? '3m');
-    if (!(range in HISTORY_RANGES)) {
+    // Own keys only: `in` would also accept inherited names like 'toString'.
+    if (!Object.hasOwn(HISTORY_RANGES, range)) {
         return res.status(400).json({ error: `unknown range: ${range}` });
     }
 
@@ -343,13 +353,20 @@ app.get('/api/history', async (req, res) => {
             lux_max: r.lux_max,
         })),
     });
-});
+}));
 
 // In production the built dashboard is served by this same process, so there is
 // one container and no CORS. In development Vite serves it on 5173 and proxies
 // /api here instead, so this directory simply does not exist yet.
 const webDist = join(dirname(fileURLToPath(import.meta.url)), '..', 'web', 'dist');
 app.use(express.static(webDist));
+
+// Last, so it catches whatever route() passes on. The detail goes to the log,
+// not the response: a database error message is no business of the caller's.
+app.use((err, req, res, _next) => {
+    console.error(`${req.method} ${req.path} failed:`, err.message);
+    res.status(500).json({ error: 'internal error' });
+});
 
 server.listen(PORT, () => console.log(`plant-vitals server listening on :${PORT}`));
 

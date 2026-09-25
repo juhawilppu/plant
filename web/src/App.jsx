@@ -16,7 +16,6 @@ const SERIES = {
     soil: 'var(--series-soil)',
     temp: 'var(--series-temp)',
     humidity: 'var(--series-humidity)',
-    light: 'var(--series-light)',
     rssi: 'var(--text-muted)',
 };
 
@@ -238,7 +237,6 @@ export default function App() {
             soil: readings.map((r) => ({ t: r.recorded_at, v: r.soil_pct })),
             temp: readings.map((r) => ({ t: r.recorded_at, v: r.air_temp_c })),
             humidity: readings.map((r) => ({ t: r.recorded_at, v: r.humidity_pct })),
-            light: readings.map((r) => ({ t: r.recorded_at, v: r.lux })),
             rssi: readings.map((r) => ({ t: r.recorded_at, v: r.rssi })),
         }),
         [readings],
@@ -416,15 +414,6 @@ export default function App() {
                             value={latest?.humidity_pct ?? null}
                             unit="%"
                             points={series.humidity}
-                            pending={pending}
-                        />
-                        <Tile
-                            label="Light"
-                            color={SERIES.light}
-                            value={latest?.lux ?? null}
-                            unit="lux"
-                            decimals={0}
-                            points={series.light}
                             pending={pending}
                         />
                         <Tile

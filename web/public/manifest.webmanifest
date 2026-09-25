@@ -1,7 +1,7 @@
 {
   "name": "Plant vitals",
   "short_name": "Plant",
-  "description": "Soil moisture, light, air temperature and humidity for a houseplant.",
+  "description": "Soil moisture, air temperature and humidity for a houseplant.",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",

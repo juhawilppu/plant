@@ -1,16 +1,16 @@
 /* "Sunny Side": warm ground, white cards, rounded everything, large type. The
-   warmth is carried by surface, shape and scale - the four series hues are
+   warmth is carried by surface, shape and scale - the three series hues are
    unchanged from the validated instance, because that is the part of the
    palette doing accessibility work:
      1 blue   soil moisture
      2 orange air temperature
      3 aqua   humidity
-     4 yellow light
-   Adjacent CVD dE 9.1 light / 8.4 dark, normal-vision 22.9 / 19.8. Against the
-   new white card, light-mode aqua (2.82:1) and yellow (2.17:1) are still under
-   3:1, so the relief rule still applies: on the live page every measure states
-   its value as text beside its colour key, and on the history page every chart
-   carries a direct end-label. No value anywhere is encoded by hue alone. */
+   Slot 4, yellow, was light, and went with the light sensor. Adjacent CVD dE
+   9.1 light / 8.4 dark, normal-vision 22.9 / 19.8, measured across all four;
+   dropping the last slot can only widen that. Against the new white card,
+   light-mode aqua (2.82:1) is still under 3:1, so the relief rule still
+   applies: on the live page every measure states its value as text beside its
+   colour key, and on the history page every chart carries a direct end-label. No value anywhere is encoded by hue alone. */
 :root {
     color-scheme: light;
 
@@ -33,7 +33,6 @@
     --series-soil: #2a78d6;
     --series-temp: #eb6834;
     --series-humidity: #1baf7a;
-    --series-light: #eda100;
 
     --status-good: #2f7d32;
     --status-warning: #b07d0a;
@@ -69,7 +68,6 @@
         --series-soil: #3987e5;
         --series-temp: #d95926;
         --series-humidity: #199e70;
-        --series-light: #c98500;
 
         --status-good: #6cbf6f;
         --status-warning: #e0b23c;
@@ -99,7 +97,6 @@
     --series-soil: #3987e5;
     --series-temp: #d95926;
     --series-humidity: #199e70;
-    --series-light: #c98500;
 
     --status-good: #6cbf6f;
     --status-warning: #e0b23c;

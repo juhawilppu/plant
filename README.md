@@ -209,7 +209,7 @@ need anything?"; **the long view** (`#/history`) answers "what has been
 happening?". Every measure appears exactly once on each, in the form that page
 needs - the same number never gets a tile *and* a chart on one screen.
 
-- **Now** is the last 48 hours: one hero figure, four stat tiles, and a
+- **Now** is the last 48 hours: one hero figure, three stat tiles, and a
   sparkline under each as a trend cue only. Anything with axes lives on the
   other page. 48 hours because that is the window where a reading still implies
   an action - long enough to show last night as well as this one.
@@ -227,12 +227,16 @@ needs - the same number never gets a tile *and* a chart on one screen.
 - **One hero figure**, soil moisture, because it is the only reading that implies
   an action. The verdict beside it ships an icon *and* words, never colour alone,
   and it does not appear at all until there is a reading to have a verdict about.
-- **No value is encoded by hue alone.** The light-mode aqua and yellow sit below
+- **No value is encoded by hue alone.** The light-mode aqua sits below
   3:1 against the surface, so that relief is required rather than decorative: on
   *now* every measure states its value as text beside its colour key, and on the
   long view every chart carries a direct end-label.
 - **Charts hold their previous render at reduced opacity while refetching** - no
   skeleton flash, no layout jump.
-- Colours are the first four slots of a validated categorical palette, fixed per
+- Colours are the first three slots of a validated categorical palette, fixed per
   metric so a filter can never repaint them. Worst adjacent CVD separation 9.1
-  light / 8.4 dark.
+  light / 8.4 dark, measured across four; the fourth, yellow, left with the
+  broken light sensor.
+- **Light is not shown.** The BH1750 is broken and is not being replaced. The
+  firmware and API still carry `lux`, so a working sensor would only need the
+  tile and the chart back.

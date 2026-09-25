@@ -75,7 +75,6 @@ export default function History({ device, series }) {
             soil: of('soil_pct_avg', 'soil_pct_min', 'soil_pct_max'),
             temp: of('air_temp_c_avg', 'air_temp_c_min', 'air_temp_c_max'),
             humidity: of('humidity_pct_avg', 'humidity_pct_min', 'humidity_pct_max'),
-            light: of('lux_avg', 'lux_min', 'lux_max'),
         };
     }, [buckets]);
 
@@ -152,15 +151,6 @@ export default function History({ device, series }) {
                         color={series.humidity}
                         points={points.humidity}
                         spanHours={spanHours}
-                        pending={pending}
-                    />
-                    <TimeSeries
-                        title="Light"
-                        unit="lux"
-                        color={series.light}
-                        points={points.light}
-                        spanHours={spanHours}
-                        decimals={0}
                         pending={pending}
                     />
                 </div>

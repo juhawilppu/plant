@@ -43,11 +43,9 @@ static const int SOIL_PIN = 34;
 static const char *MQTT_HOST = "mqtt.juhawilppu.com";
 static const uint16_t MQTT_PORT = 8883;
 
-// TEMPORARY: 1 minute for bring-up, to see readings land quickly while only
-// the soil probe is wired. Soil moisture in a pot changes over hours, so this
-// should go back to 5 minutes (5UL * 60UL * 1000UL) once bring-up is done -
-// anything faster than that just fills the table for no benefit.
-static const uint32_t INTERVAL_MS = 1UL * 60UL * 1000UL;
+// Soil moisture in a pot changes over hours, so anything faster than five
+// minutes just fills the table for no benefit.
+static const uint32_t INTERVAL_MS = 5UL * 60UL * 1000UL;
 
 // How often to retry a dropped MQTT connection. Kept short relative to
 // INTERVAL_MS so a blip near publish time does not cost a whole cycle.
@@ -206,16 +204,6 @@ void setup() {
 
     Wire.begin(SDA_PIN, SCL_PIN);
 
-    // TEMPORARY: raw bus scan to debug AHT20 not being found, independent of
-    // whatever init sequence Adafruit_AHTX0::begin() sends. Remove once solved.
-    Serial.println("I2C scan:");
-    for (uint8_t addr = 1; addr < 127; addr++) {
-        Wire.beginTransmission(addr);
-        if (Wire.endTransmission() == 0) {
-            Serial.printf("  found device at 0x%02X\n", addr);
-        }
-    }
-
     haveAht = aht.begin();
     Serial.printf("AHT20:  %s\n", haveAht ? "ok" : "NOT FOUND");
 
@@ -238,8 +226,9 @@ void setup() {
     // Default 256 bytes is too small for this payload plus topic and MQTT
     // overhead; the reading body alone can run past 300.
     mqttClient.setBufferSize(384);
-    // Well above INTERVAL_MS so the broker never sees a spurious timeout on
-    // this connection, while client.loop() below still keeps PINGREQ flowing.
+    // Independent of INTERVAL_MS: client.loop() below sends a PINGREQ whenever
+    // the connection has been quiet this long, so the broker never sees a
+    // spurious timeout between readings.
     mqttClient.setKeepAlive(60);
 
     connectWifi();

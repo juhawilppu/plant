@@ -169,7 +169,7 @@ const BUCKET_LADDER_S = [
     7 * 86400,
 ];
 
-// Few enough marks that the smallest of the four cards, about 340px of plot,
+// Few enough marks that the smallest of the three cards, about 340px of plot,
 // still has room between them. Overshoot this and neighbouring marks land on
 // the same pixel column, which is where a line stops being a line.
 const MAX_BUCKETS = 200;

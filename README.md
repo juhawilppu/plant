@@ -186,18 +186,14 @@ rather than the return code.
 
 ### What is still open
 
-1. **The firmware still speaks HTTP**, not MQTT. It needs `PubSubClient`, the
-   two topics, the Last Will and the `msg_id` counter, pointed at
-   `mqtt.juhawilppu.com:8883` with the Let's Encrypt root pinned via
-   `setCACert()`.
-2. **Confirm Cloudflare's SSL/TLS mode is Full (strict), not Full.** Plain
+1. **Confirm Cloudflare's SSL/TLS mode is Full (strict), not Full.** Plain
    *Full* encrypts the Cloudflare-to-origin leg but accepts any certificate,
    including a self-signed or expired one, which leaves that leg
    impersonable. The origin now has a real Let's Encrypt certificate, so strict
    costs nothing.
-3. **ufw is inactive** and no swap file exists. Neither is blocking; a 512 MB
-   swapfile is cheap insurance on a 961 MB box.
-4. **The read API and dashboard are public.** Only plant telemetry, but readable
+2. **No swap file exists.** Not blocking, but a 512 MB swapfile is cheap
+   insurance on a 961 MB box.
+3. **The read API and dashboard are public.** Only plant telemetry, but readable
    by anyone with the URL.
 
 ---

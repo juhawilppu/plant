@@ -21,7 +21,7 @@ services:
       # Bound to loopback ONLY. On the server this file runs on a public IP, and
       # a plain '55433:5432' would publish Postgres to the internet. Local
       # development still reaches it on localhost:55433 exactly as before.
-      # 5432 is usually taken, and 55432 already belongs to AI360-Auth.
+      # 5432 and 55432 are usually taken by other local Postgres instances.
       - '127.0.0.1:55433:5432'
     volumes:
       - plant-vitals-pgdata:/var/lib/postgresql/data

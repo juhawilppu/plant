@@ -31,8 +31,44 @@ Postgres          devices  one row per node, holds the soil calibration
 server/index.js   Express: GET /api/readings, GET /api/history (bucketed),
         |         GET /api/devices, POST /api/readings (kept for curl and as
         |         a fallback), and serves the built dashboard
+        |
+server/live.js    WebSocket on /api/live: every newly stored reading is pushed
+        |         to open dashboards the moment it lands
         v
 web/              Vite + React, hand-rolled SVG charts
+```
+
+### Live updates, given a minute's poll would do
+
+The dashboard does not poll. It fetches its 48 hours over HTTP once, then
+listens on `/api/live` for each new reading. That is overkill for a plant, and
+kept anyway, because this project is over-engineered on purpose. What makes it
+more than a socket bolted on:
+
+- **One path in.** MQTT and the HTTP fallback both go through `ingest()` in
+  `server/index.js`, which writes the row and pushes it. A duplicate that the
+  dedup index swallows is not pushed, so the socket never shows anything the
+  database does not hold.
+- **The snapshot is the truth; the socket only adds to it.** A reconnect
+  re-fetches the snapshot, because whatever arrived while the socket was down
+  exists only in the database.
+- **No gap at page load.** The history fetch and the socket open at about the
+  same moment, and a reading could land between them. On connect the server
+  sends the latest stored reading first, which is the only one that can fall
+  into that gap.
+- **Two heartbeats, one timer.** Every 30 s the server pings each client, so sockets
+  that vanished get freed, and sends a heartbeat message, so a browser can tell
+  its own socket died silently (the usual state after a laptop sleeps) and
+  reconnect. It also keeps the connection under Cloudflare's 100-second idle
+  timeout when the node is offline.
+- **Polling as the fallback.** While the socket is down, the page polls every
+  minute, so a network that blocks WebSockets costs freshness, not data. The
+  header says **Live** only while the socket is up.
+
+Watching it from a terminal (Node 22 has a WebSocket client built in):
+
+```sh
+node -e "new WebSocket('wss://plant.juhawilppu.com/api/live').onmessage = (e) => console.log(e.data)"
 ```
 
 ### Why MQTT, given the volume does not need it

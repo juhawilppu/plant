@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import History from './History.jsx';
 import Sparkline from './Sparkline.jsx';
+import useLive from './useLive.js';
 
 // Two pages, and the split is the whole design. This one is "how is the plant
 // right now?": every measure appears exactly once, as a big current number with
@@ -63,8 +64,8 @@ function relativeAge(iso, now) {
 
 // The node publishes every minute, so a gap past fifteen is fifteen missed
 // readings - long enough to rule out a WiFi blip or a broker restart, short
-// enough to catch a dead node well inside the hour. The
-// dot only ever restates what the words beside it already say.
+// enough to catch a dead node well inside the hour. The dot only ever restates
+// what the words beside it already say.
 function freshnessColor(iso, now) {
     const mins = (now - new Date(iso).getTime()) / 60000;
     if (mins > 60) return 'var(--status-critical)';
@@ -195,42 +196,15 @@ function Tile({ label, color, value, unit, decimals = 1, points, pending }) {
 
 export default function App() {
     const route = useHashRoute();
-    const [data, setData] = useState(null);
-    const [devices, setDevices] = useState([]);
-    const [error, setError] = useState(null);
-    const [tick, setTick] = useState(0);
     const [now, setNow] = useState(() => Date.now());
 
-    // Fetched on both pages: the history view has its own aggregates, but the
+    // Live on both pages: the history view has its own aggregates, but the
     // header's "last reading 4 min ago" is about the node being alive, which is
     // just as worth knowing while looking backwards.
-    useEffect(() => {
-        let cancelled = false;
-        Promise.all([
-            fetch(`/api/readings?device=plant-01&hours=${LIVE_HOURS}`).then((r) => r.json()),
-            fetch('/api/devices').then((r) => r.json()),
-        ])
-            .then(([readings, devs]) => {
-                if (cancelled) return;
-                setData(readings);
-                setDevices(devs);
-                setError(null);
-            })
-            .catch((e) => !cancelled && setError(e.message));
-        return () => {
-            cancelled = true;
-        };
-    }, [tick]);
+    const { data, devices, error, live } = useLive('plant-01', LIVE_HOURS);
 
-    // Poll at the node's own cadence. Any faster only re-fetches rows that
-    // cannot have changed.
-    useEffect(() => {
-        const id = setInterval(() => setTick((t) => t + 1), 60 * 1000);
-        return () => clearInterval(id);
-    }, []);
-
-    // The age label has to keep counting between fetches, so it gets its own
-    // clock rather than riding on the poll.
+    // The age label has to keep counting between readings, so it gets its own
+    // clock rather than riding on the data.
     useEffect(() => {
         const id = setInterval(() => setNow(Date.now()), 30 * 1000);
         return () => clearInterval(id);
@@ -310,6 +284,9 @@ export default function App() {
                           : latest
                             ? `Last reading ${lastSeenAge}`
                             : 'No readings yet'}
+                    {/* Only while the socket is up: without it the page is polling,
+                        which is still correct, just not instant. */}
+                    {live && !pending ? <span className="lastseen-live">Live</span> : null}
                 </div>
             </header>
 

@@ -8,9 +8,11 @@
 
 import express from 'express';
 import pg from 'pg';
+import { createServer } from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { startMqttBridge } from './mqtt-bridge.js';
+import { startLiveHub } from './live.js';
 
 const PORT = process.env.PORT || 8090;
 
@@ -32,6 +34,10 @@ const pool = new pg.Pool({
 const app = express();
 app.use(express.json({ limit: '8kb' }));
 
+// Created up front rather than by app.listen() at the bottom, because the live
+// hub shares it: the WebSocket upgrade arrives on the same port as the API.
+const server = createServer(app);
+
 // Converts a raw ADC value to a percentage using the device's two calibration
 // points. Capacitive probes read higher in air than in water, so the scale runs
 // backwards: raw == soil_raw_air means 0% wet, raw == soil_raw_water means 100%.
@@ -47,6 +53,85 @@ function soilPercent(raw, air, water) {
     // is real and allowed to show past 100%, rather than being clamped away.
     // The dry end still floors at 0: nothing is drier than "no water at all".
     return Math.round(Math.max(0, pct) * 10) / 10;
+}
+
+// A reading as the dashboard sees it, whether it arrives in a GET /api/readings
+// response or pushed over the live socket: the same fields, the same order, and
+// the percentage computed the same way.
+function publicReading(r, air, water) {
+    return {
+        recorded_at: r.recorded_at,
+        soil_raw: r.soil_raw,
+        air_temp_c: r.air_temp_c,
+        humidity_pct: r.humidity_pct,
+        pressure_hpa: r.pressure_hpa,
+        lux: r.lux,
+        rssi: r.rssi,
+        soil_pct: soilPercent(r.soil_raw, air, water),
+    };
+}
+
+const live = startLiveHub(server, { path: '/api/live', latest: latestReadings });
+
+// Every reading enters through here, whether it came over MQTT or the HTTP
+// fallback, so there is one place that writes a row and one place that tells
+// the open dashboards about it. Returns the stored row, or null when the dedup
+// index swallowed a repeat - which is not news, so nothing is pushed for it.
+// Throws on an unknown device_id (23503) and leaves the reporting to the caller.
+async function ingest(device, b) {
+    // The insert and the calibration lookup in one round trip, so the pushed
+    // reading carries its soil_pct just as a fetched one would.
+    const { rows } = await pool.query(
+        `with ins as (
+             insert into readings
+               (device_id, soil_raw, air_temp_c, humidity_pct, pressure_hpa, lux, rssi, uptime_s, msg_id)
+             values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+             on conflict (device_id, msg_id) do nothing
+             returning *
+         )
+         select ins.*, d.soil_raw_air, d.soil_raw_water
+           from ins join devices d using (device_id)`,
+        [
+            device,
+            b.soil_raw ?? null,
+            b.air_temp_c ?? null,
+            b.humidity_pct ?? null,
+            b.pressure_hpa ?? null,
+            b.lux ?? null,
+            b.rssi ?? null,
+            b.uptime_s ?? null,
+            b.msg_id ?? null,
+        ],
+    );
+    if (!rows.length) return null;
+    const row = rows[0];
+    live.broadcast({
+        type: 'reading',
+        device,
+        reading: publicReading(row, row.soil_raw_air, row.soil_raw_water),
+    });
+    return row;
+}
+
+// What a freshly connected dashboard is sent first; see live.js for why. One
+// indexed lookup per device rather than a DISTINCT ON, which would walk every
+// reading ever stored to find the newest.
+async function latestReadings() {
+    const { rows } = await pool.query(
+        `select r.*, d.soil_raw_air, d.soil_raw_water
+           from devices d
+           cross join lateral (
+               select * from readings
+                where device_id = d.device_id
+                order by recorded_at desc
+                limit 1
+           ) r`,
+    );
+    return rows.map((r) => ({
+        type: 'reading',
+        device: r.device_id,
+        reading: publicReading(r, r.soil_raw_air, r.soil_raw_water),
+    }));
 }
 
 app.get('/health', async (_req, res) => {
@@ -70,28 +155,11 @@ app.post('/api/readings', async (req, res) => {
     if (!b.device_id) return res.status(400).json({ error: 'device_id required' });
 
     try {
-        const { rows } = await pool.query(
-            `insert into readings
-               (device_id, soil_raw, air_temp_c, humidity_pct, pressure_hpa, lux, rssi, uptime_s, msg_id)
-             values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-             on conflict (device_id, msg_id) do nothing
-             returning id, recorded_at`,
-            [
-                b.device_id,
-                b.soil_raw ?? null,
-                b.air_temp_c ?? null,
-                b.humidity_pct ?? null,
-                b.pressure_hpa ?? null,
-                b.lux ?? null,
-                b.rssi ?? null,
-                b.uptime_s ?? null,
-                b.msg_id ?? null,
-            ],
-        );
-        // No row returned means the dedup index swallowed a repeat. That is a
-        // success from the publisher's point of view, not an error.
-        if (!rows.length) return res.status(200).json({ duplicate: true });
-        res.status(201).json({ id: rows[0].id, recorded_at: rows[0].recorded_at });
+        const row = await ingest(b.device_id, b);
+        // No row means the dedup index swallowed a repeat. That is a success
+        // from the publisher's point of view, not an error.
+        if (!row) return res.status(200).json({ duplicate: true });
+        res.status(201).json({ id: row.id, recorded_at: row.recorded_at });
     } catch (err) {
         // An unknown device_id trips the foreign key. That is a real error worth
         // surfacing plainly rather than silently creating a device row, so a
@@ -140,10 +208,7 @@ app.get('/api/readings', async (req, res) => {
         device,
         hours,
         calibrated: soil_raw_air != null && soil_raw_water != null,
-        readings: rows.map((r) => ({
-            ...r,
-            soil_pct: soilPercent(r.soil_raw, soil_raw_air, soil_raw_water),
-        })),
+        readings: rows.map((r) => publicReading(r, soil_raw_air, soil_raw_water)),
     });
 });
 
@@ -286,14 +351,14 @@ app.get('/api/history', async (req, res) => {
 const webDist = join(dirname(fileURLToPath(import.meta.url)), '..', 'web', 'dist');
 app.use(express.static(webDist));
 
-app.listen(PORT, () => console.log(`plant-vitals server listening on :${PORT}`));
+server.listen(PORT, () => console.log(`plant-vitals server listening on :${PORT}`));
 
 // MQTT is the node's real path in; the HTTP endpoint above stays for curl, for
 // bring-up before the broker is trusted, and as a fallback if the broker is
 // down. Without MQTT_URL the process is simply HTTP-only, which is how it runs
 // on a laptop.
 if (process.env.MQTT_URL) {
-    startMqttBridge(pool, process.env.MQTT_URL, {
+    startMqttBridge(ingest, process.env.MQTT_URL, {
         username: process.env.MQTT_USERNAME,
         password: process.env.MQTT_PASSWORD,
     });

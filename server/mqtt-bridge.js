@@ -1,10 +1,14 @@
-// Subscribes to the nodes' MQTT topics and writes each reading into Postgres.
+// Subscribes to the nodes' MQTT topics and hands each reading to ingest(), which
+// writes it to Postgres and pushes it to open dashboards.
 //
 // Runs INSIDE the API process rather than as its own container. On a 1 GB box
 // with no swap, a second Node runtime costs ~60 MB for no benefit: it would
-// share this pg pool's job anyway, and mqtt.js reconnects on its own, so the
-// failure it would isolate us from does not exist. Kept in its own file so the
-// separation is still legible, and so moving it out later is a one-line change.
+// share this process's database pool anyway, and mqtt.js reconnects on its own,
+// so the failure it would isolate us from does not exist. Being in-process is
+// also what lets a reading reach the live socket without a second hop. Kept in
+// its own file so the separation is still legible; moving it out of process
+// would now also need another way to tell the API about new rows, such as
+// Postgres LISTEN/NOTIFY.
 //
 // Topics:
 //   plants/<device>/reading   JSON body, QoS 1
@@ -17,7 +21,7 @@ import mqtt from 'mqtt';
 const READING_RE = /^plants\/([^/]+)\/reading$/;
 const STATUS_RE = /^plants\/([^/]+)\/status$/;
 
-export function startMqttBridge(pool, url, options = {}) {
+export function startMqttBridge(ingest, url, options = {}) {
     const client = mqtt.connect(url, {
         clientId: `plant-bridge-${Math.random().toString(16).slice(2, 10)}`,
         username: options.username,
@@ -63,23 +67,7 @@ export function startMqttBridge(pool, url, options = {}) {
         const device = topicDevice;
 
         try {
-            await pool.query(
-                `insert into readings
-                   (device_id, soil_raw, air_temp_c, humidity_pct, pressure_hpa, lux, rssi, uptime_s, msg_id)
-                 values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-                 on conflict (device_id, msg_id) do nothing`,
-                [
-                    device,
-                    body.soil_raw ?? null,
-                    body.air_temp_c ?? null,
-                    body.humidity_pct ?? null,
-                    body.pressure_hpa ?? null,
-                    body.lux ?? null,
-                    body.rssi ?? null,
-                    body.uptime_s ?? null,
-                    body.msg_id ?? null,
-                ],
-            );
+            await ingest(device, body);
         } catch (err) {
             if (err.code === '23503') {
                 console.error(`mqtt: unknown device_id ${device}, dropped`);

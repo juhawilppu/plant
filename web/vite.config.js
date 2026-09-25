@@ -10,9 +10,10 @@ export default defineConfig({
     },
     server: {
         // In development the API runs separately on 8090; proxying keeps the
-        // frontend's fetch('/api/...') identical in both environments.
+        // frontend's fetch('/api/...') and the /api/live socket identical in
+        // both environments.
         proxy: {
-            '/api': 'http://localhost:8090',
+            '/api': { target: 'http://localhost:8090', ws: true },
         },
     },
 });

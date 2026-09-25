@@ -192,6 +192,16 @@ h1 {
     flex: none;
 }
 
+/* Quieter than the age beside it: the age is the news, this only says how it
+   is arriving. */
+.lastseen-live {
+    color: var(--text-muted);
+    font-size: 14px;
+    font-weight: 600;
+    padding-left: 10px;
+    border-left: 1px solid var(--border);
+}
+
 .card {
     background: var(--surface-1);
     border-radius: var(--radius-card);

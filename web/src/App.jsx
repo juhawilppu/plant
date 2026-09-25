@@ -61,8 +61,9 @@ function relativeAge(iso, now) {
     return days === 1 ? '1 day ago' : `${days} days ago`;
 }
 
-// The node publishes every five minutes, so a gap past fifteen means two missed
-// slots - long enough to be worth flagging, short enough not to cry wolf. The
+// The node publishes every minute, so a gap past fifteen is fifteen missed
+// readings - long enough to rule out a WiFi blip or a broker restart, short
+// enough to catch a dead node well inside the hour. The
 // dot only ever restates what the words beside it already say.
 function freshnessColor(iso, now) {
     const mins = (now - new Date(iso).getTime()) / 60000;
@@ -213,7 +214,7 @@ export default function App() {
     // Poll at the node's own cadence. Any faster only re-fetches rows that
     // cannot have changed.
     useEffect(() => {
-        const id = setInterval(() => setTick((t) => t + 1), 5 * 60 * 1000);
+        const id = setInterval(() => setTick((t) => t + 1), 60 * 1000);
         return () => clearInterval(id);
     }, []);
 

@@ -12,7 +12,7 @@ Hardware, parts list and wiring: **`docs/hardware.md`**.
 
 ```
 ESP32 (firmware/plant_node)
-  every 5 min: read 3 sensors, publish JSON at QoS 1
+  every minute: read 3 sensors, publish JSON at QoS 1
         |
         |  plants/<device>/reading    the measurement
         |  plants/<device>/status     online / offline, retained, set as the
@@ -37,7 +37,7 @@ web/              Vite + React, hand-rolled SVG charts
 
 ### Why MQTT, given the volume does not need it
 
-288 rows a day does not justify a broker on operational grounds, and the HTTP
+1,440 rows a day does not justify a broker on operational grounds, and the HTTP
 endpoint that predates this still works. MQTT is here for what it makes possible
 rather than what it relieves:
 
@@ -48,7 +48,7 @@ rather than what it relieves:
   connection dies, so the system reports its own death instead of the dashboard
   inferring it from missing rows.
 - **Retained messages.** Whatever subscribes at 3am gets the last value at once
-  rather than waiting up to five minutes.
+  rather than waiting up to a minute.
 - **One persistent connection** with keepalives, instead of a fresh TLS handshake
   every cycle - which is the expensive part, and would decide battery life.
 
@@ -210,7 +210,7 @@ needs - the same number never gets a tile *and* a chart on one screen.
   other page. 48 hours because that is the window where a reading still implies
   an action - long enough to show last night as well as this one.
 - **The long view** is 1 / 3 / 6 / 12 months or all time, bucketed server-side by
-  `GET /api/history`. A year is ~105k rows, so the server sends one average per
+  `GET /api/history`. A year is ~525k rows, so the server sends one average per
   bucket with that bucket's low and high, and the chart draws the average as the
   line and the spread as a band behind it.
 - **Buckets snap to whole days past a fortnight.** A sub-day bucket still

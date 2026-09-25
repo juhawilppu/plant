@@ -1,12 +1,10 @@
 // Plant vitals server: accepts readings from the ESP32 node, stores them in
 // Postgres, and serves them back to the dashboard.
 //
-// Deliberately NOT behind a queue. A single node posting every five minutes is
-// 288 rows a day; a broker would be one more daemon to run, secure and monitor
-// for no benefit at that volume. The node retries on failure and a missed plant
-// reading is worthless anyway. If this ever grows to many nodes, or needs to
-// buffer through server downtime, MQTT goes in front of this file and nothing
-// else changes.
+// The node publishes over MQTT and mqtt-bridge.js writes those readings; the
+// HTTP POST below is kept for curl and as a fallback. A single node posting
+// every minute is 1,440 rows a day, so there is no queue in front of Postgres:
+// a missed plant reading is worthless anyway.
 
 import express from 'express';
 import pg from 'pg';
@@ -149,14 +147,14 @@ app.get('/api/readings', async (req, res) => {
     });
 });
 
-// The long-term view asks for months at a time, and months of five-minute
-// samples are the one thing this API cannot just hand over: a year is ~105,000
+// The long-term view asks for months at a time, and months of one-minute
+// samples are the one thing this API cannot just hand over: a year is ~525,000
 // rows, far more than the wire wants to carry and far more than a chart a
 // thousand pixels wide can draw. So the server buckets, and sends back the
 // average of each bucket together with its low and high - the spread is the
 // part a mean would quietly destroy, and over a day it is most of the story.
 const BUCKET_LADDER_S = [
-    300, // 5 min - the node's own cadence, so no aggregation at all
+    300, // 5 min - the finest step, five of the node's readings each
     900,
     1800,
     3600,

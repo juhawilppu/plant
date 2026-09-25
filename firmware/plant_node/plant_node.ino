@@ -43,9 +43,9 @@ static const int SOIL_PIN = 34;
 static const char *MQTT_HOST = "mqtt.juhawilppu.com";
 static const uint16_t MQTT_PORT = 8883;
 
-// Soil moisture in a pot changes over hours, so anything faster than five
-// minutes just fills the table for no benefit.
-static const uint32_t INTERVAL_MS = 5UL * 60UL * 1000UL;
+// One reading a minute. Far faster than soil moisture changes, but it keeps the
+// dashboard live, and 1,440 rows a day is still nothing for Postgres.
+static const uint32_t INTERVAL_MS = 1UL * 60UL * 1000UL;
 
 // How often to retry a dropped MQTT connection. Kept short relative to
 // INTERVAL_MS so a blip near publish time does not cost a whole cycle.

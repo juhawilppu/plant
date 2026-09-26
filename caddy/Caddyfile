@@ -10,7 +10,27 @@
 # The dashboard. Proxied through Cloudflare, so the certificate here is for the
 # Cloudflare-to-origin leg; browsers see Cloudflare's own certificate.
 plant.juhawilppu.com {
-	reverse_proxy server:8090
+	# Two identical API instances, either of which may be dead at any moment -
+	# on purpose, when the chaos monkey is out. See the README.
+	reverse_proxy server-a:8090 server-b:8090 {
+		lb_policy round_robin
+
+		# A new request, a WebSocket upgrade included, that dials a dead
+		# instance is retried on the other one rather than failing.
+		lb_try_duration 5s
+		lb_try_interval 250ms
+
+		# Takes an instance out of rotation within a couple of seconds of its
+		# /health failing - which it also does while the instance cannot hear
+		# new readings - and puts it back once it passes again.
+		health_uri /health
+		health_interval 2s
+		health_timeout 1s
+
+		# A dial that fails marks the instance down at once, before the next
+		# active check would have.
+		fail_duration 5s
+	}
 
 	log {
 		output file /data/access-plant.log {

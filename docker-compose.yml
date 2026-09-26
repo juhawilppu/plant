@@ -1,13 +1,61 @@
 # Plant vitals stack.
 #
-#   caddy      TLS terminator for the origin; also owns the broker's certificate
+#   caddy      TLS terminator for the origin, load balancer across the two API
+#              instances; also owns the broker's certificate
 #   postgres   Postgres 16, schema applied from db/schema.sql on first boot
 #   mosquitto  MQTT broker the nodes publish to
-#   server     the ingest + read API, and the MQTT->Postgres bridge inside it
+#   server-a   the ingest + read API, with the MQTT->Postgres bridge inside it,
+#   server-b   twice, so either can die without a dashboard noticing
 #              (optional locally - see the `server` profile)
+#   chaos      kills one of the two at random, to prove that claim (opt-in -
+#              see the `chaos` profile and the README)
 #
 #   docker compose up -d postgres mosquitto        # deps only, run the API on the host
 #   docker compose --profile server up -d --build  # everything in Docker (production)
+
+# One definition for both API instances; they differ only in name and port.
+x-server: &server
+  profiles: ['server']
+  build: ./server
+  # Named, so both instances run the one image rather than building two.
+  image: plant-vitals-server
+  restart: unless-stopped
+  environment: &server-env
+    # Inside the compose network the host is the service name, not localhost.
+    DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD:-postgres}@postgres:5432/plant_vitals
+    INGEST_TOKEN: ${INGEST_TOKEN}
+    PORT: 8090
+    # Inside the compose network the broker is reachable by service name, so
+    # the bridge never goes out over the public interface.
+    MQTT_URL: mqtt://mosquitto:1883
+    MQTT_USERNAME: bridge
+    MQTT_PASSWORD: ${MQTT_BRIDGE_PASSWORD}
+  volumes:
+    # The dashboard is built on the developer's machine and rsynced, so it is
+    # mounted rather than baked into the image: a UI change needs a sync and a
+    # restart, not a rebuild. index.js resolves ../web/dist from /app.
+    - ./web/dist:/web/dist:ro
+  # An instance measured 30-40 MB through a chaos run. Two of these plus
+  # Postgres, the broker and Caddy share 961 MB, so the cap is well under the
+  # 256 MB the single instance used to get, and still four times what it uses.
+  mem_limit: 160m
+  # /health fails while an instance cannot hear new readings, not just while
+  # it cannot reach Postgres. deploy.sh waits on this before moving to the
+  # next instance, and the chaos monkey only strikes while both pass it.
+  healthcheck:
+    test: ['CMD', 'wget', '-q', '-O', '/dev/null', 'http://127.0.0.1:8090/health']
+    interval: 5s
+    timeout: 3s
+    retries: 2
+    start_period: 15s
+  labels:
+    plant-vitals.chaos: target
+  depends_on:
+    postgres:
+      condition: service_healthy
+    mosquitto:
+      condition: service_started
+
 services:
   postgres:
     image: postgres:16-alpine
@@ -50,37 +98,27 @@ services:
     # Postgres. Mosquitto idles at a few MB, so this is generous.
     mem_limit: 96m
 
-  server:
-    profiles: ['server']
-    build: ./server
-    container_name: plant-vitals-server
-    restart: unless-stopped
+  server-a:
+    <<: *server
+    container_name: plant-vitals-server-a
     environment:
-      # Inside the compose network the host is the service name, not localhost.
-      DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD:-postgres}@postgres:5432/plant_vitals
-      INGEST_TOKEN: ${INGEST_TOKEN}
-      PORT: 8090
-      # Inside the compose network the broker is reachable by service name, so
-      # the bridge never goes out over the public interface.
-      MQTT_URL: mqtt://mosquitto:1883
-      MQTT_USERNAME: bridge
-      MQTT_PASSWORD: ${MQTT_BRIDGE_PASSWORD}
+      <<: *server-env
+      INSTANCE: a
     ports:
-      # Loopback only. In production Caddy is the only thing that talks to this,
-      # over the compose network as `server:8090`; the host binding is kept so
-      # deploy.sh can health-check it without going out through Cloudflare.
+      # Loopback only. In production Caddy is the only thing that talks to the
+      # instances, over the compose network; the host bindings are kept so
+      # deploy.sh and a person on the box can reach each one directly without
+      # going out through Cloudflare.
       - '127.0.0.1:${WEB_PORT:-8090}:8090'
-    volumes:
-      # The dashboard is built on the developer's machine and rsynced, so it is
-      # mounted rather than baked into the image: a UI change needs a sync and a
-      # restart, not a rebuild. index.js resolves ../web/dist from /app.
-      - ./web/dist:/web/dist:ro
-    mem_limit: 256m
-    depends_on:
-      postgres:
-        condition: service_healthy
-      mosquitto:
-        condition: service_started
+
+  server-b:
+    <<: *server
+    container_name: plant-vitals-server-b
+    environment:
+      <<: *server-env
+      INSTANCE: b
+    ports:
+      - '127.0.0.1:${WEB_PORT_B:-8091}:8090'
 
   caddy:
     image: caddy:2-alpine
@@ -93,12 +131,45 @@ services:
       - '80:80'
       - '443:443'
     volumes:
-      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      # The directory, not the file. rsync replaces the Caddyfile rather than
+      # rewriting it, and a single-file mount would keep showing Caddy the old
+      # one; through the directory, deploy.sh's `caddy reload` sees the new.
+      - ./caddy:/etc/caddy:ro
       - plant-vitals-caddydata:/data
       - plant-vitals-caddyconfig:/config
     mem_limit: 128m
     depends_on:
-      - server
+      - server-a
+      - server-b
+
+  # The chaos monkey. Every few minutes, and only while both API instances are
+  # healthy, it kills one at random - SIGKILL or SIGTERM, a crash or a clean
+  # stop - and brings it back a little later. chaos/check.mjs is how to tell
+  # whether the dashboards noticed.
+  #
+  #   docker compose --profile server --profile chaos up -d chaos    # release it
+  #   docker compose --profile server --profile chaos rm -sf chaos   # call it off
+  #
+  # Both profiles, because Caddy depends on the instances and compose refuses
+  # the whole file when it cannot see them. Naming chaos only starts chaos.
+  #
+  # It drives Docker through the host's socket, which is root on the host in
+  # all but name. Acceptable for something with no ports that only runs when
+  # asked to, but that is why it is behind a profile of its own.
+  chaos:
+    profiles: ['chaos']
+    image: docker:27-cli
+    container_name: plant-vitals-chaos
+    restart: unless-stopped
+    entrypoint: ['sh', '/chaos/monkey.sh']
+    environment:
+      CHAOS_MIN_S: ${CHAOS_MIN_S:-120}
+      CHAOS_MAX_S: ${CHAOS_MAX_S:-600}
+      CHAOS_DOWN_S: ${CHAOS_DOWN_S:-20}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./chaos:/chaos:ro
+    mem_limit: 32m
 
 volumes:
   plant-vitals-pgdata:

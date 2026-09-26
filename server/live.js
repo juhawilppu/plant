@@ -8,10 +8,21 @@
 // GET /api/readings and uses this only for what comes after.
 //
 // Messages, all JSON:
+//   { type: 'hello', instance }            first, naming the API instance
 //   { type: 'reading', device, reading }   same shape as a GET /api/readings row
 //   { type: 'heartbeat' }                  every HEARTBEAT_MS
 //
-// On connect the server first sends the latest stored reading per device. A
+// Two instances run behind Caddy, and the hello says which one this socket
+// landed on. Dashboards ignore it; chaos/check.mjs uses it to show that a
+// socket killed along with one instance came back on the other.
+//
+// An instance that cannot currently hear about new readings (see feed.js)
+// refuses the upgrade with a 503 rather than accepting a socket it would leave
+// silent. Refused before it opens, so the browser backs off as it would for
+// any failed connect. /health fails for the same reason, so by the time the
+// browser retries, Caddy has taken this instance out of rotation.
+//
+// After the hello the server sends the latest stored reading per device. A
 // dashboard fetches its history and opens this socket at about the same time,
 // and a reading that lands between the two would otherwise be in neither. The
 // gap is far shorter than the node's one-minute cadence, so the latest reading
@@ -30,9 +41,15 @@ const HEARTBEAT_MS = 30 * 1000;
 // Public and read-only, on a 1 GB box. Far above any real audience.
 const MAX_CLIENTS = 100;
 
-export function startLiveHub(server, { path, latest }) {
-    // maxPayload is tiny because nothing legitimate is ever sent this way.
-    const wss = new WebSocketServer({ server, path, maxPayload: 1024 });
+export function startLiveHub(server, { path, instance, latest, ready }) {
+    const wss = new WebSocketServer({
+        server,
+        path,
+        // Tiny because nothing legitimate is ever sent this way.
+        maxPayload: 1024,
+        verifyClient: (_info, done) =>
+            ready() ? done(true) : done(false, 503, 'not hearing new readings'),
+    });
 
     wss.on('connection', async (ws) => {
         if (wss.clients.size > MAX_CLIENTS) {
@@ -46,6 +63,7 @@ export function startLiveHub(server, { path, latest }) {
         // An unhandled 'error' event would take the whole process down with it.
         ws.on('error', (err) => console.error('live: socket error', err.message));
 
+        send(ws, { type: 'hello', instance });
         try {
             for (const message of await latest()) send(ws, message);
         } catch (err) {
@@ -71,6 +89,11 @@ export function startLiveHub(server, { path, latest }) {
         broadcast(message) {
             const data = JSON.stringify(message);
             for (const ws of wss.clients) send(ws, data);
+        },
+        // Every open dashboard reconnects - to this instance or the other one -
+        // and re-fetches its snapshot on the way.
+        closeAll(code, reason) {
+            for (const ws of wss.clients) ws.close(code, reason);
         },
     };
 }

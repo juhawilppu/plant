@@ -9,12 +9,18 @@
 import express from 'express';
 import pg from 'pg';
 import { createServer } from 'node:http';
+import { hostname } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { startMqttBridge } from './mqtt-bridge.js';
 import { startLiveHub } from './live.js';
+import { CHANNEL, listenForReadings } from './feed.js';
 
 const PORT = process.env.PORT || 8090;
+
+// Two of these run in production, behind Caddy. The name only shows up in logs
+// and in the live socket's hello, so a failover can be seen to have happened.
+const INSTANCE = process.env.INSTANCE || hostname();
 
 // The shared secret the node sends in X-Device-Token. No per-device keys: one
 // household, a handful of nodes, and rotating a single token means reflashing
@@ -25,11 +31,10 @@ if (!INGEST_TOKEN) {
     process.exit(1);
 }
 
-const pool = new pg.Pool({
-    connectionString:
-        process.env.DATABASE_URL ||
-        'postgres://postgres:postgres@localhost:55433/plant_vitals',
-});
+const DATABASE_URL =
+    process.env.DATABASE_URL || 'postgres://postgres:postgres@localhost:55433/plant_vitals';
+
+const pool = new pg.Pool({ connectionString: DATABASE_URL });
 
 const app = express();
 app.use(express.json({ limit: '8kb' }));
@@ -77,26 +82,45 @@ function publicReading(r, air, water) {
     };
 }
 
-const live = startLiveHub(server, { path: '/api/live', latest: latestReadings });
+// A stored row, with its device's calibration joined on, as a live message.
+function readingMessage(r) {
+    return {
+        type: 'reading',
+        device: r.device_id,
+        reading: publicReading(r, r.soil_raw_air, r.soil_raw_water),
+    };
+}
+
+// Whether this instance is currently hearing about new readings. Until it is,
+// a socket opened here would sit silent, so the hub refuses them and /health
+// fails, which takes the instance out of Caddy's rotation.
+let hearing = false;
+
+const live = startLiveHub(server, {
+    path: '/api/live',
+    instance: INSTANCE,
+    latest: latestReadings,
+    ready: () => hearing,
+});
 
 // Every reading enters through here, whether it came over MQTT or the HTTP
 // fallback, so there is one place that writes a row and one place that tells
 // the open dashboards about it. Returns the stored row, or null when the dedup
 // index swallowed a repeat - which is not news, so nothing is pushed for it.
 // Throws on an unknown device_id (23503) and leaves the reporting to the caller.
+//
+// The telling is a NOTIFY in the same statement, heard by every instance
+// including this one, rather than a push from here; feed.js has why.
 async function ingest(device, b) {
-    // The insert and the calibration lookup in one round trip, so the pushed
-    // reading carries its soil_pct just as a fetched one would.
     const { rows } = await pool.query(
         `with ins as (
              insert into readings
                (device_id, soil_raw, air_temp_c, humidity_pct, pressure_hpa, lux, rssi, uptime_s, msg_id)
              values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
              on conflict (device_id, msg_id) do nothing
-             returning *
+             returning id, recorded_at
          )
-         select ins.*, d.soil_raw_air, d.soil_raw_water
-           from ins join devices d using (device_id)`,
+         select id, recorded_at, pg_notify('${CHANNEL}', id::text) from ins`,
         [
             device,
             b.soil_raw ?? null,
@@ -109,14 +133,7 @@ async function ingest(device, b) {
             b.msg_id ?? null,
         ],
     );
-    if (!rows.length) return null;
-    const row = rows[0];
-    live.broadcast({
-        type: 'reading',
-        device,
-        reading: publicReading(row, row.soil_raw_air, row.soil_raw_water),
-    });
-    return row;
+    return rows[0] ?? null;
 }
 
 // What a freshly connected dashboard is sent first; see live.js for why. One
@@ -133,19 +150,55 @@ async function latestReadings() {
                 limit 1
            ) r`,
     );
-    return rows.map((r) => ({
-        type: 'reading',
-        device: r.device_id,
-        reading: publicReading(r, r.soil_raw_air, r.soil_raw_water),
-    }));
+    return rows.map(readingMessage);
 }
 
+// One notification per stored reading, from whichever instance stored it.
+// Pushed strictly one after another, so two readings that land close together
+// cannot overtake each other on the way out - the dashboard would drop the one
+// that arrived second as already seen.
+let pushing = Promise.resolve();
+function pushReading(id) {
+    pushing = pushing
+        .then(async () => {
+            const { rows } = await pool.query(
+                `select r.*, d.soil_raw_air, d.soil_raw_water
+                   from readings r join devices d using (device_id)
+                  where r.id = $1`,
+                [id],
+            );
+            if (rows.length) live.broadcast(readingMessage(rows[0]));
+        })
+        .catch((err) => console.error(`live: could not push reading ${id}`, err.message));
+}
+
+listenForReadings(DATABASE_URL, {
+    onReading: pushReading,
+    onUp() {
+        hearing = true;
+        console.log(`live: instance ${INSTANCE} is listening for readings`);
+    },
+    onDown(why) {
+        const was = hearing;
+        hearing = false;
+        console.error(`live: lost the reading feed (${why})`);
+        // Whatever is stored while this connection is down never reaches this
+        // instance, so its dashboards are sent away to re-fetch rather than left
+        // looking live while they miss readings.
+        if (was) live.closeAll(1011, 'lost the reading feed');
+    },
+});
+
+// Also what Caddy's active health check and Docker's healthcheck ask. An
+// instance that cannot hear readings is reported unhealthy even though it can
+// still answer HTTP, so it stops being handed new dashboards.
 app.get('/health', async (_req, res) => {
     try {
         await pool.query('select 1');
-        res.json({ ok: true });
+        if (!hearing) throw new Error('not listening for readings');
+        res.json({ ok: true, instance: INSTANCE });
     } catch (err) {
-        res.status(503).json({ ok: false, error: err.message });
+        res.status(503).json({ ok: false, instance: INSTANCE, error: err.message });
     }
 });
 
@@ -368,7 +421,25 @@ app.use((err, req, res, _next) => {
     res.status(500).json({ error: 'internal error' });
 });
 
-server.listen(PORT, () => console.log(`plant-vitals server listening on :${PORT}`));
+server.listen(PORT, () =>
+    console.log(`plant-vitals server ${INSTANCE} listening on :${PORT}`),
+);
+
+// `docker stop` sends SIGTERM, and Node running as a container's PID 1 ignores
+// it unless it has a handler - so without this, every stop sat out Docker's
+// ten-second grace period and ended in a SIGKILL anyway. Now the dashboards
+// are told this is a restart and reconnect to the other instance, new
+// connections are refused so Caddy retries them there, and requests already in
+// flight get a few seconds to finish. That is what lets deploy.sh restart the
+// instances one at a time without the page ever going dark.
+function shutdown(signal) {
+    console.log(`${signal}: instance ${INSTANCE} shutting down`);
+    live.closeAll(1012, 'service restart');
+    server.close(() => process.exit(0));
+    setTimeout(() => process.exit(0), 5000).unref();
+}
+process.once('SIGTERM', shutdown);
+process.once('SIGINT', shutdown);
 
 // MQTT is the node's real path in; the HTTP endpoint above stays for curl, for
 // bring-up before the broker is trusted, and as a fallback if the broker is

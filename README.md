@@ -30,12 +30,17 @@ Postgres          devices  one row per node, holds the soil calibration
         |
 server/index.js   Express: GET /api/readings, GET /api/history (bucketed),
         |         GET /api/devices, POST /api/readings (kept for curl and as
-        |         a fallback), and serves the built dashboard
+        |         a fallback), and serves the built dashboard. Runs twice, as
+        |         server-a and server-b, behind Caddy
         |
 server/live.js    WebSocket on /api/live: every newly stored reading is pushed
-        |         to open dashboards the moment it lands
+        |         to open dashboards the moment it lands. server/feed.js hears
+        |         each one through Postgres LISTEN/NOTIFY, so both instances do
         v
 web/              Vite + React, hand-rolled SVG charts
+
+chaos/            a chaos monkey that kills one instance now and then, and the
+                  checker that proves no dashboard noticed
 ```
 
 ### Live updates, given a minute's poll would do
@@ -46,8 +51,10 @@ kept anyway, because this project is over-engineered on purpose. What makes it
 more than a socket bolted on:
 
 - **One path in.** MQTT and the HTTP fallback both go through `ingest()` in
-  `server/index.js`, which writes the row and pushes it. A duplicate that the
-  dedup index swallows is not pushed, so the socket never shows anything the
+  `server/index.js`, which writes the row and raises a Postgres `NOTIFY` for it
+  in the same statement. Every instance listens and pushes the row to its own
+  sockets. A duplicate that the dedup index swallows raises nothing, and a
+  `NOTIFY` is only delivered on commit, so the socket never shows anything the
   database does not hold.
 - **The snapshot is the truth; the socket only adds to it.** A reconnect
   re-fetches the snapshot, because whatever arrived while the socket was down
@@ -70,6 +77,106 @@ Watching it from a terminal (Node 22 has a WebSocket client built in):
 ```sh
 node -e "new WebSocket('wss://plant.juhawilppu.com/api/live').onmessage = (e) => console.log(e.data)"
 ```
+
+### Two instances, and a chaos monkey to keep them honest
+
+The API runs twice on the one box, as `server-a` and `server-b`, from the same
+image. Caddy round-robins between them, checks `/health` on each every two
+seconds, and retries a request that dials a dead one on the other. A chaos
+monkey (`chaos/monkey.sh`) can be let loose to kill one of them at random.
+A houseplant needs none of this; the project is over-engineered on purpose.
+
+**What survives is the stream, not the connection.** A WebSocket is a TCP
+connection owned by one process, and when the monkey kills that process the
+connection goes with it. What must survive is what the dashboard shows. The
+page reconnects, lands on the other instance, and ends up missing nothing:
+
+- no reading is missing, and none is shown twice
+- the page is back to **Live** within a couple of seconds
+
+The **Live** badge blinks off for that second or so, and is left to. It says
+Live only while the socket is up, and for that second it is not.
+
+**The bug a second instance would have brought.** Each instance runs its own
+MQTT bridge, so both receive every reading and both race to insert it. The
+dedup index lets exactly one win, and originally only the winner pushed the
+reading to its sockets. Every dashboard would have missed, live, each reading
+its own instance lost the race for: 13 of 59 in the test below. The monkey
+would also have hidden this: every kill forces a
+reconnect, the reconnect re-fetches the snapshot, and the re-fetch fills in
+what the socket dropped. So the push now comes from Postgres instead
+(`server/feed.js`). `ingest()` raises a `NOTIFY` in the same statement as the
+insert, and every instance `LISTEN`s. An instance that loses that connection
+cannot hear readings, and it does three things until it has the connection
+back:
+
+- it closes its sockets, so those dashboards re-fetch and reconnect elsewhere
+- it refuses new ones with a 503
+- it fails `/health`, which takes it out of Caddy's rotation
+
+Both bridges still subscribe to everything, on purpose. The double delivery
+costs one no-op insert per reading, and it means readings are still stored
+while either instance is dead.
+
+**Stopping cleanly.** `docker stop` sends SIGTERM, which Node running as a
+container's PID 1 used to ignore, so every stop waited out Docker's ten
+seconds and ended in a SIGKILL. Now an instance closes its sockets with
+`1012 service restart`, refuses new connections so Caddy retries them on its
+twin, and exits. That is what lets `deploy.sh` restart the two one at a time.
+
+**The monkey** only strikes while both instances are healthy, so it never
+kills the last one standing. Half the time it sends SIGKILL, which is a
+crash, and half the time SIGTERM, which is a clean stop. It brings its victim
+back itself, because Docker treats `docker kill` as a manual stop and the
+restart policy would leave it down. It needs the Docker socket, which is root
+on the host in all but name, so it lives behind a compose profile of its own
+and runs only when asked to:
+
+```sh
+ssh root@185.14.186.98 "cd /opt/plant-vitals && docker compose --profile server --profile chaos up -d chaos"
+ssh root@185.14.186.98 "docker logs -f plant-vitals-chaos"
+ssh root@185.14.186.98 "cd /opt/plant-vitals && docker compose --profile server --profile chaos rm -sf chaos"
+```
+
+It strikes every 2-10 minutes and keeps its victim down for 20 s. To change
+that, set `CHAOS_MIN_S`, `CHAOS_MAX_S` and `CHAOS_DOWN_S` in `.env`.
+
+**The checker** (`chaos/check.mjs`) is how to tell whether the dashboards
+noticed. Watching the dashboard would not tell you: its re-fetch covers
+exactly the failure being tested for. So the checker holds a socket of its
+own, reconnects the way the page does, and afterwards compares what arrived
+against the database:
+
+```sh
+node chaos/check.mjs https://plant.juhawilppu.com --minutes 60
+```
+
+It sorts every reading stored while it watched into one of three groups:
+
+- **arrived**: the reading came over the socket
+- **between**: it was stored during a reconnect, and the page's re-fetch
+  covers it
+- **missed**: it was stored between two readings that one connection did
+  receive, so that connection was open and should have had it
+
+**missed** must be 0, and so must anything that arrived but is not in the
+database. The run exits 1 otherwise. Judging by position rather than
+timestamp means it needs no clock in common with the server.
+
+Measured on a local copy of the stack, with a fake node publishing every 2 s
+and the monkey on a 15-30 s fuse:
+
+| Run | Readings | Missed | Reconnects |
+|---|---|---|---|
+| The code before LISTEN/NOTIFY, as two instances | 59 | **13** | - |
+| This code, 5 min, 8 kills | 133 | **0** | 0.7-1.0 s |
+| This code, feed connections cut, then a rolling restart | 53 | **0** | 0.7-2.5 s |
+
+The first run shows the bug was real. The page's re-fetch would have covered
+every one of those 13, so the dashboard itself would have looked fine. The
+2.5 s reconnect is the feed-cut case. Both instances went deaf together, and
+Caddy held the connection until one of them was listening again, rather than
+refusing it.
 
 ### Why MQTT, given the volume does not need it
 
@@ -156,7 +263,8 @@ docker exec plant-vitals-postgres psql -U postgres -d plant_vitals -c 'truncate 
 
 ## The server
 
-Deployed and running on **185.14.186.98** (Ubuntu 24.04, 961 MB, no swap).
+Deployed and running on **185.14.186.98** (Ubuntu 24.04, 961 MB, plus the
+512 MB swapfile `deploy.sh` creates if there is none).
 
 | What | Where |
 |---|---|
@@ -164,7 +272,7 @@ Deployed and running on **185.14.186.98** (Ubuntu 24.04, 961 MB, no swap).
 | MQTT over TLS | **mqtts://mqtt.juhawilppu.com:8883** |
 | MQTT plaintext | 1883, **compose network only** - not published to the host |
 | Postgres | **loopback only**, `127.0.0.1:55433` |
-| API direct | `127.0.0.1:8090` on the box; Caddy is the only public route in |
+| API direct | `127.0.0.1:8090` (server-a) and `:8091` (server-b) on the box; Caddy is the only public route in |
 | Project root | `/opt/plant-vitals` |
 | Secrets | `/opt/plant-vitals/.env`, mode 600, generated on the box |
 
@@ -204,9 +312,14 @@ chowns it, and sends Mosquitto a SIGHUP to reload without dropping connections.
 never picks up would fail silently 90 days later.
 
 Redeploy with `./deploy.sh`. The React bundle is built **locally** and rsynced:
-a vite build is the one step likely to be OOM-killed on a 1 GB box with no swap.
+a vite build is the one step likely to be OOM-killed on a 1 GB box.
 Everything else builds in Docker on the server. `.env` and the broker's
 `passwd` are excluded from the sync so they survive `--delete`.
+
+The two API instances are replaced **one at a time**, each waiting for its
+health check before the next goes, so a deploy no longer takes the dashboard
+down. A build that comes up unhealthy stops the deploy at the first instance,
+with the second still serving the old code.
 
 Two MQTT accounts, with deliberately asymmetric rights (`mosquitto/config/acl`):
 
@@ -227,9 +340,7 @@ rather than the return code.
    including a self-signed or expired one, which leaves that leg
    impersonable. The origin now has a real Let's Encrypt certificate, so strict
    costs nothing.
-2. **No swap file exists.** Not blocking, but a 512 MB swapfile is cheap
-   insurance on a 961 MB box.
-3. **The read API and dashboard are public.** Only plant telemetry, but readable
+2. **The read API and dashboard are public.** Only plant telemetry, but readable
    by anyone with the URL.
 
 ---

@@ -1,14 +1,18 @@
 // Subscribes to the nodes' MQTT topics and hands each reading to ingest(), which
-// writes it to Postgres and pushes it to open dashboards.
+// writes it to Postgres and announces it to every instance's open dashboards.
 //
-// Runs INSIDE the API process rather than as its own container. On a 1 GB box
-// with no swap, a second Node runtime costs ~60 MB for no benefit: it would
-// share this process's database pool anyway, and mqtt.js reconnects on its own,
-// so the failure it would isolate us from does not exist. Being in-process is
-// also what lets a reading reach the live socket without a second hop. Kept in
-// its own file so the separation is still legible; moving it out of process
-// would now also need another way to tell the API about new rows, such as
-// Postgres LISTEN/NOTIFY.
+// Runs INSIDE the API process rather than as its own container. On a 1 GB box,
+// a separate Node runtime costs ~60 MB for no benefit: it would share this
+// process's database pool anyway, and mqtt.js reconnects on its own, so the
+// failure it would isolate us from does not exist. Kept in its own file so the
+// separation is still legible.
+//
+// Both API instances run a bridge, and both subscribe to everything, so every
+// reading is delivered twice and both race to insert it. That is deliberate:
+// the dedup index turns the loser's insert into a no-op, and it means a reading
+// is still stored while either instance is dead. A shared subscription would
+// halve the work and lose exactly that. Which instance wins does not matter to
+// the dashboards - they hear about the row through Postgres, see feed.js.
 //
 // Topics:
 //   plants/<device>/reading   JSON body, QoS 1

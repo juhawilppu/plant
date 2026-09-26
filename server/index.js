@@ -35,6 +35,14 @@ const DATABASE_URL =
     process.env.DATABASE_URL || 'postgres://postgres:postgres@localhost:55433/plant_vitals';
 
 const pool = new pg.Pool({ connectionString: DATABASE_URL });
+// An idle pooled connection that the database drops (a Postgres restart) is
+// reported here, and an unhandled 'error' event would end the process. The
+// pool replaces the connection by itself, so logging it is all there is to do.
+pool.on('error', (err) => console.error('db: idle connection lost', err.message));
+
+// The node buffers a day of readings (plant_node.ino, BUFFER_CAPACITY). An age
+// past a week is not a reading held back, it is a broken clock, and is ignored.
+const MAX_AGE_MS = 7 * 24 * 3600 * 1000;
 
 const app = express();
 app.use(express.json({ limit: '8kb' }));
@@ -111,12 +119,22 @@ const live = startLiveHub(server, {
 //
 // The telling is a NOTIFY in the same statement, heard by every instance
 // including this one, rather than a push from here; feed.js has why.
+//
+// recorded_at is still the server's clock, moved back by age_ms: how long the
+// node held the reading before sending it. A node that was offline replays its
+// buffer, and without the age an hour of readings would all land on the minute
+// it reconnected. The node needs no clock of its own for this - the age comes
+// from its millis() - so there is no NTP to trust. What the age cannot see is
+// time spent queued in the broker while no bridge was connected; with two
+// bridges that needs both instances down at once.
 async function ingest(device, b) {
+    const ageMs = Number.isFinite(b.age_ms) && b.age_ms >= 0 && b.age_ms <= MAX_AGE_MS ? b.age_ms : 0;
     const { rows } = await pool.query(
         `with ins as (
              insert into readings
-               (device_id, soil_raw, air_temp_c, humidity_pct, pressure_hpa, lux, rssi, uptime_s, msg_id)
-             values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+               (device_id, soil_raw, air_temp_c, humidity_pct, pressure_hpa, lux, rssi, uptime_s, msg_id,
+                recorded_at)
+             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, now() - make_interval(secs => $10 / 1000.0))
              on conflict (device_id, msg_id) do nothing
              returning id, recorded_at
          )
@@ -131,6 +149,7 @@ async function ingest(device, b) {
             b.rssi ?? null,
             b.uptime_s ?? null,
             b.msg_id ?? null,
+            ageMs,
         ],
     );
     return rows[0] ?? null;
@@ -453,6 +472,7 @@ process.once('SIGINT', shutdown);
 // on a laptop.
 if (process.env.MQTT_URL) {
     startMqttBridge(ingest, process.env.MQTT_URL, {
+        clientId: `plant-bridge-${INSTANCE}`,
         username: process.env.MQTT_USERNAME,
         password: process.env.MQTT_PASSWORD,
     });

@@ -26,9 +26,10 @@ create table if not exists readings (
     id            bigserial primary key,
     device_id     text not null references devices (device_id),
 
-    -- When the server accepted the reading. The ESP32 has no battery-backed
-    -- clock and would have to fetch NTP to know the time, so the server
-    -- timestamps instead. Fine at a 5-minute cadence.
+    -- When the reading was taken, on the server's clock: the time it arrived
+    -- minus the age_ms the node sends with it, which is how long the node held
+    -- it (see ingest() in server/index.js). The ESP32 has no battery-backed
+    -- clock and would have to fetch NTP to know the time; an age needs neither.
     recorded_at   timestamptz not null default now(),
 
     -- Raw 12-bit ADC value, 0-4095. Converted to a percentage at read time
@@ -46,7 +47,9 @@ create table if not exists readings (
     rssi          integer,
     uptime_s      bigint,
 
-    -- A counter the node increments per reading. MQTT QoS 1 is at-least-once,
+    -- Unique per reading, per device: the node sends its boot count (kept in
+    -- flash) in the high 32 bits and a per-boot counter in the low 32, so it
+    -- never repeats across reboots. MQTT QoS 1 is at-least-once,
     -- which means the broker is allowed to redeliver, so the same reading can
     -- arrive twice. This is what makes the insert idempotent. Null is allowed
     -- and never conflicts (Postgres treats nulls as distinct), so a publisher

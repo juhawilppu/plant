@@ -61,9 +61,10 @@ flowchart TB
     class monkey,checker chaos
 ```
 
-1. The **ESP32** reads its sensors once a minute and publishes the reading to
-   **Mosquitto** over MQTT with TLS. It connects to the box directly, because
-   Cloudflare only carries HTTP.
+1. The **ESP32** reads its sensors once a minute into a buffer, and publishes
+   from it to **Mosquitto** over MQTT with TLS. A reading leaves the buffer only
+   when the broker acks it, so an outage delays readings rather than losing
+   them. It connects to the box directly, because Cloudflare only carries HTTP.
 2. Both **API instances** receive every reading and race to insert it into
    **Postgres**. The unique index on `(device_id, msg_id)` lets exactly one
    insert win.
@@ -310,10 +311,36 @@ rather than what it relieves:
 - **One persistent connection** with keepalives, instead of a fresh TLS handshake
   every cycle - which is the expensive part, and would decide battery life.
 
-QoS 1 is at-least-once, so the broker may redeliver and the same reading can
-arrive twice. That is what `msg_id` and the unique index on
-`(device_id, msg_id)` are for: the insert is idempotent, and a duplicate is a
-no-op rather than a second row.
+**At-least-once, end to end.** Every hop keeps a reading until the next one
+has it:
+
+- The **node** measures into a RAM buffer that holds a day, and publishes at
+  QoS 1, oldest first. A reading leaves the buffer only when the broker's
+  PUBACK arrives. (It used PubSubClient until 2026-09, which can only publish
+  at QoS 0, so the at-least-once this section claimed was at-most-once in
+  practice. Anything published during a blip was lost.)
+- The **broker** keeps a persistent session for each bridge (`clean: false`,
+  one fixed client id per instance), so readings wait for an instance that is
+  restarting.
+- The **bridge** acks a reading only after its row is in Postgres. When the
+  insert fails because the database is down, it withholds the ack and drops the
+  connection, and the broker redelivers when the session resumes. Bad data
+  (Postgres error classes 22 and 23) is acked and dropped, or it would be
+  redelivered forever.
+
+At-least-once means the same reading can arrive twice. That is what `msg_id`
+and the unique index on `(device_id, msg_id)` are for: the insert is
+idempotent, and a duplicate is a no-op rather than a second row. The node
+builds `msg_id` from a boot count kept in flash and a per-boot sequence, so it
+never repeats. A random start, as before, would eventually land on ids already
+used, and the dedup index would silently drop those readings.
+
+**Late readings keep their time.** A buffered reading is sent with `age_ms`,
+how long the node held it, and the server sets `recorded_at` to its own clock
+minus that age. The age comes from the node's `millis()`, so the node needs no
+real-time clock and no NTP. The error is the network latency, plus any time
+the reading spent queued in the broker while *both* bridges were down. The
+buffer is in RAM, so a node reboot loses whatever it held.
 
 The bridge trusts the **topic** for device identity, not the `device_id` in the
 payload, because the ACL is written in terms of topics - trusting the body would

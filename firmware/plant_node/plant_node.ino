@@ -11,7 +11,9 @@
 //   "Adafruit AHTX0"       (pulls in Adafruit BusIO + Unified Sensor)
 //   "Adafruit BMP280 Library"
 //   "BH1750" by Christopher Laws
-//   "PubSubClient" by Nick O'Leary
+//   "MQTT" by Joel Gaehwiler (256dpi/arduino-mqtt), not PubSubClient: this
+//   one can publish at QoS 1 and wait for the broker's PUBACK, which is what
+//   lets a reading leave the buffer only once the broker has it
 //
 // Board: "ESP32 Dev Module". Upload speed 921600 is fine; if uploads fail, drop
 // to 115200 before suspecting the board.
@@ -20,11 +22,14 @@
 // Last Will, same msg_id scheme - see mosquitto/config/acl and
 // server/mqtt-bridge.js for the other end of this.
 //
-// UNTESTED against real hardware - written while the parts were in the post.
+// Every reading goes into a buffer first and leaves it only when the broker
+// acks it, so a WiFi drop or a broker restart delays readings instead of
+// losing them. See "The buffer" below.
 
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
-#include <PubSubClient.h>
+#include <MQTT.h>
+#include <Preferences.h>
 #include <ArduinoOTA.h>
 #include <Wire.h>
 #include <Adafruit_AHTX0.h>
@@ -46,6 +51,16 @@ static const uint16_t MQTT_PORT = 8883;
 // One reading a minute. Far faster than soil moisture changes, but it keeps the
 // dashboard live, and 1,440 rows a day is still nothing for Postgres.
 static const uint32_t INTERVAL_MS = 1UL * 60UL * 1000UL;
+
+// A day of readings at INTERVAL_MS, 28 bytes each: 40 KB of the ESP32's RAM.
+// Past that the oldest reading is dropped to make room: after a day offline the
+// recent readings are the ones worth having.
+static const size_t BUFFER_CAPACITY = 1440;
+
+// How long one pass of loop() may spend sending the backlog. Each publish waits
+// for its PUBACK, so a full day's backlog takes a few minutes; this keeps OTA
+// and the MQTT keepalive serviced while it drains.
+static const uint32_t DRAIN_BUDGET_MS = 2000UL;
 
 // How often to retry a dropped MQTT connection. Kept short relative to
 // INTERVAL_MS so a blip near publish time does not cost a whole cycle.
@@ -99,19 +114,42 @@ bool haveBmp = false;
 bool haveLight = false;
 
 WiFiClientSecure tlsClient;
-PubSubClient mqttClient(tlsClient);
+// Sized for one reading plus the topic and MQTT framing.
+MQTTClient mqttClient(512);
 
 String readingTopic;
 String statusTopic;
 String clientId;
 
-// Seeded from the ESP32's hardware RNG rather than counting from zero: a
-// reboot should not restart the counter where a previous session already
-// left off, or a coincidental repeat would be silently swallowed by the
-// (device_id, msg_id) dedup index on the server.
-uint32_t msgId = 0;
+// msg_id is what the server deduplicates on, so it must never repeat for this
+// device: a repeat is silently dropped as a duplicate. It is the boot count in
+// the high 32 bits and a per-boot sequence in the low 32. The boot count lives
+// in flash (NVS) and is bumped once per boot, which is a single write and no
+// wear worth counting. The earlier scheme, a random start below 100,000, would
+// have collided with its own history after a couple of months of readings.
+// Stays under 2^53, so JSON and JavaScript carry it exactly.
+uint32_t bootId = 0;
+uint32_t seq = 0;
 
-uint32_t lastPublish = 0;
+// The buffer. A ring of readings not yet acked by the broker, oldest at head.
+// Each keeps the millis() it was taken at, and is sent with its age, so the
+// server can date it correctly however late it arrives (see ingest() in
+// server/index.js). Held in RAM, so a reboot loses what is in it; the age is
+// only meaningful within one boot anyway, since millis() restarts at zero.
+struct Reading {
+    uint32_t seq;
+    uint32_t takenAtMs;
+    float tempC, humidity, pressure, lux;   // NAN when the sensor gave nothing
+    int16_t soilRaw;
+    int8_t rssi;                            // 0 when WiFi was down
+};
+
+Reading buffer[BUFFER_CAPACITY];
+size_t head = 0;
+size_t count = 0;
+uint32_t dropped = 0;
+
+uint32_t lastReading = 0;
 uint32_t lastMqttAttempt = 0;
 bool otaStarted = false;
 
@@ -179,22 +217,16 @@ void connectMqttIfDue() {
 
     Serial.printf("MQTT: connecting to %s:%u as plantnode\n", MQTT_HOST, MQTT_PORT);
 
-    // Last Will: if this session drops without a clean disconnect, the broker
-    // publishes "offline" on the node's behalf - see mqtt-bridge.js and the
-    // README's "Why MQTT" section. Retained, so it survives until overwritten.
-    const bool ok = mqttClient.connect(
-        clientId.c_str(), "plantnode", MQTT_NODE_PASSWORD,
-        statusTopic.c_str(), 1, true, "offline", true);
-
-    if (!ok) {
-        Serial.printf("MQTT: connect failed, rc=%d\n", mqttClient.state());
+    if (!mqttClient.connect(clientId.c_str(), "plantnode", MQTT_NODE_PASSWORD)) {
+        Serial.printf("MQTT: connect failed, error=%d rc=%d\n",
+                      mqttClient.lastError(), mqttClient.returnCode());
         return;
     }
 
     Serial.println("MQTT: connected");
     // Retained, so anything that subscribes later immediately learns the node
     // is up without waiting for the next cycle.
-    mqttClient.publish(statusTopic.c_str(), "online", true);
+    mqttClient.publish(statusTopic.c_str(), "online", true, 1);
 }
 
 void setup() {
@@ -214,32 +246,44 @@ void setup() {
     haveLight = lightMeter.begin(BH1750::CONTINUOUS_HIGH_RES_MODE);
     Serial.printf("BH1750: %s\n", haveLight ? "ok" : "NOT FOUND");
 
-    randomSeed(esp_random());
-    msgId = esp_random() % 100000;
+    Preferences prefs;
+    prefs.begin("plant-node", false);
+    bootId = prefs.getUInt("boot", 0) + 1;
+    prefs.putUInt("boot", bootId);
+    prefs.end();
+    Serial.printf("boot %lu\n", (unsigned long) bootId);
 
     readingTopic = String("plants/") + DEVICE_ID + "/reading";
     statusTopic = String("plants/") + DEVICE_ID + "/status";
     clientId = String("plant-node-") + DEVICE_ID;
 
     tlsClient.setCACert(MQTT_ROOT_CA);
-    mqttClient.setServer(MQTT_HOST, MQTT_PORT);
-    // Default 256 bytes is too small for this payload plus topic and MQTT
-    // overhead; the reading body alone can run past 300.
-    mqttClient.setBufferSize(384);
+    mqttClient.begin(MQTT_HOST, MQTT_PORT, tlsClient);
+    // Last Will: if this session drops without a clean disconnect, the broker
+    // publishes "offline" on the node's behalf - see mqtt-bridge.js and the
+    // README's "Why MQTT" section. Retained, so it survives until overwritten.
+    mqttClient.setWill(statusTopic.c_str(), "offline", true, 1);
     // Independent of INTERVAL_MS: client.loop() below sends a PINGREQ whenever
     // the connection has been quiet this long, so the broker never sees a
     // spurious timeout between readings.
     mqttClient.setKeepAlive(60);
+    // How long a publish waits for its PUBACK. Past it the library closes the
+    // connection, the reading stays in the buffer, and the reconnect retries.
+    mqttClient.setTimeout(5000);
 
     connectWifi();
     beginOta();
     connectMqttIfDue();
 }
 
-void publishReading() {
-    const int soilRaw = readSoilRaw();
-
-    float tempC = NAN, humidity = NAN, pressure = NAN, lux = NAN;
+// Measures now and puts the reading at the back of the buffer, whether or not
+// there is a connection to send it on.
+void takeReading() {
+    Reading r;
+    r.seq = ++seq;
+    r.takenAtMs = millis();
+    r.soilRaw = readSoilRaw();
+    r.tempC = r.humidity = r.pressure = r.lux = NAN;
 
     if (haveAht) {
         sensors_event_t humidityEvent, tempEvent;
@@ -248,45 +292,76 @@ void publishReading() {
         // same as "sensor absent" rather than publishing whatever garbage was
         // left on the stack in the unfilled event structs.
         if (aht.getEvent(&humidityEvent, &tempEvent)) {
-            tempC = tempEvent.temperature;
-            humidity = humidityEvent.relative_humidity;
+            r.tempC = tempEvent.temperature;
+            r.humidity = humidityEvent.relative_humidity;
         } else {
             Serial.println("AHT20: read failed, skipping this cycle");
         }
     }
     // Air temperature comes from the AHT20; the BMP280 is only asked for
     // pressure, because its own temperature reading runs warm from self-heating.
-    if (haveBmp) pressure = bmp.readPressure() / 100.0f;
-    if (haveLight) lux = lightMeter.readLightLevel();
+    if (haveBmp) r.pressure = bmp.readPressure() / 100.0f;
+    if (haveLight) r.lux = lightMeter.readLightLevel();
+    r.rssi = WiFi.status() == WL_CONNECTED ? WiFi.RSSI() : 0;
 
+    if (count == BUFFER_CAPACITY) {
+        head = (head + 1) % BUFFER_CAPACITY;
+        count--;
+        dropped++;
+        Serial.printf("buffer full, dropped the oldest reading (%lu so far)\n",
+                      (unsigned long) dropped);
+    }
+    buffer[(head + count) % BUFFER_CAPACITY] = r;
+    count++;
+    Serial.printf("reading %lu taken, %u waiting\n", (unsigned long) r.seq, (unsigned) count);
+}
+
+// Publishes one reading at QoS 1. True only once the broker has acked it.
+bool sendReading(const Reading &r) {
     // Hand-rolled rather than pulling in ArduinoJson: this is one flat object
-    // and snprintf is clearer than a library for it. A sensor that did not
-    // initialise is omitted, and the server stores null for it rather than
-    // recording a fabricated zero.
+    // and snprintf is clearer than a library for it. A sensor that gave nothing
+    // is omitted, and the server stores null for it rather than recording a
+    // fabricated zero.
+    const uint64_t msgId = ((uint64_t) bootId << 32) | r.seq;
     char body[384];
     int n = snprintf(body, sizeof(body),
-                      "{\"device_id\":\"%s\",\"msg_id\":%lu,\"soil_raw\":%d",
-                      DEVICE_ID, (unsigned long) (msgId + 1), soilRaw);
-    if (!isnan(tempC))    n += snprintf(body + n, sizeof(body) - n, ",\"air_temp_c\":%.2f", tempC);
-    if (!isnan(humidity)) n += snprintf(body + n, sizeof(body) - n, ",\"humidity_pct\":%.2f", humidity);
-    if (!isnan(pressure)) n += snprintf(body + n, sizeof(body) - n, ",\"pressure_hpa\":%.2f", pressure);
-    if (!isnan(lux))      n += snprintf(body + n, sizeof(body) - n, ",\"lux\":%.1f", lux);
-    n += snprintf(body + n, sizeof(body) - n, ",\"rssi\":%d,\"uptime_s\":%lu}",
-                  WiFi.RSSI(), (unsigned long) (millis() / 1000));
+                     "{\"device_id\":\"%s\",\"msg_id\":%llu,\"soil_raw\":%d",
+                     DEVICE_ID, (unsigned long long) msgId, r.soilRaw);
+    if (!isnan(r.tempC))    n += snprintf(body + n, sizeof(body) - n, ",\"air_temp_c\":%.2f", r.tempC);
+    if (!isnan(r.humidity)) n += snprintf(body + n, sizeof(body) - n, ",\"humidity_pct\":%.2f", r.humidity);
+    if (!isnan(r.pressure)) n += snprintf(body + n, sizeof(body) - n, ",\"pressure_hpa\":%.2f", r.pressure);
+    if (!isnan(r.lux))      n += snprintf(body + n, sizeof(body) - n, ",\"lux\":%.1f", r.lux);
+    if (r.rssi != 0)        n += snprintf(body + n, sizeof(body) - n, ",\"rssi\":%d", r.rssi);
+    // The age is worked out now, at send time, so it covers however long the
+    // reading sat in the buffer. Unsigned subtraction survives millis()
+    // wrapping at 49 days.
+    n += snprintf(body + n, sizeof(body) - n, ",\"uptime_s\":%lu,\"age_ms\":%lu}",
+                  (unsigned long) (r.takenAtMs / 1000),
+                  (unsigned long) (millis() - r.takenAtMs));
 
     Serial.printf("PUBLISH %s %s\n", readingTopic.c_str(), body);
 
     // Not retained: a stale reading should not be handed to a subscriber that
     // connects between cycles - that is what the retained status topic is
-    // for. Sent at whatever QoS PubSubClient's publish() gives us, which is
-    // QoS 0: the library does not track PUBACKs for its own publishes, unlike
-    // the Last Will above (a CONNECT-packet flag, handled independently). A
-    // dropped reading here is simply missing from the table, and five-minute
-    // samples tolerate the occasional gap.
-    if (mqttClient.publish(readingTopic.c_str(), body, false)) {
-        msgId++;
-    } else {
-        Serial.println("  -> publish failed");
+    // for. QoS 1, and this blocks until the PUBACK arrives or the timeout
+    // passes. A PUBACK that is lost on the way back means the reading is sent
+    // again, with the same msg_id, and the server's dedup index drops the
+    // repeat: at-least-once here, exactly-once in the table.
+    if (mqttClient.publish(readingTopic.c_str(), body, false, 1)) return true;
+    Serial.printf("  -> not acked, error=%d; kept for the next try\n", mqttClient.lastError());
+    return false;
+}
+
+// Sends the buffer oldest first, so readings reach the server in the order they
+// were taken and the dashboard's live view, which ignores a reading older than
+// the last one it has, never skips one. Stops at the first failure: sending the
+// next reading before this one would break that order.
+void drainBuffer() {
+    const uint32_t started = millis();
+    while (count > 0 && mqttClient.connected() && millis() - started < DRAIN_BUDGET_MS) {
+        if (!sendReading(buffer[head])) return;
+        head = (head + 1) % BUFFER_CAPACITY;
+        count--;
     }
 }
 
@@ -294,20 +369,17 @@ void loop() {
     connectWifi();
     connectMqttIfDue();
     // Must run often: this is what sends PINGREQ and keeps the broker from
-    // timing out the connection between five-minute publishes, and what
-    // would process incoming messages if this node ever subscribed to any.
+    // timing out the connection between readings, and what would process
+    // incoming messages if this node ever subscribed to any.
     mqttClient.loop();
     ArduinoOTA.handle();
 
     const uint32_t now = millis();
-    if (lastPublish == 0 || now - lastPublish >= INTERVAL_MS) {
-        lastPublish = now;
-        if (mqttClient.connected()) {
-            publishReading();
-        } else {
-            Serial.println("skipping publish, MQTT not connected");
-        }
+    if (lastReading == 0 || now - lastReading >= INTERVAL_MS) {
+        lastReading = now;
+        takeReading();
     }
+    drainBuffer();
 
     delay(50);
 }

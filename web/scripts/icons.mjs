@@ -17,18 +17,19 @@ import sharp from 'sharp';
 import { writeFile } from 'node:fs/promises';
 import { MONSTERA_CREDIT, monsteraLeaf } from '../src/monstera.js';
 
-// A green leaf on the pale green of the header's mark, so the tab and the page
-// show the same logo. Cream on green read as a cut-out, not a leaf.
-const GREEN = '#2f7d32';
-const PALE = '#e8f1e0';
+// A deep green leaf on a light green badge. The header mark's paler green all
+// but vanished against a light browser tab, and at 16px the leaf needs all the
+// contrast it can get; this pair holds up on light and dark tab strips alike.
+const LEAF = '#184a1d';
+const BADGE = '#c2e4ae';
 const PUBLIC = new URL('../public/', import.meta.url);
 
 const svg = (body) => `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">${body}</svg>`;
-const leaf = (scale) => monsteraLeaf({ fill: GREEN, scale });
+const leaf = (scale) => monsteraLeaf({ fill: LEAF, scale });
 
-const badge = svg(`<rect width="64" height="64" rx="16" fill="${PALE}"/>${leaf(0.84)}`);
-const square = svg(`<rect width="64" height="64" fill="${PALE}"/>${leaf(0.84)}`);
-const maskable = svg(`<rect width="64" height="64" fill="${PALE}"/>${leaf(0.64)}`);
+const badge = svg(`<rect width="64" height="64" rx="16" fill="${BADGE}"/>${leaf(0.88)}`);
+const square = svg(`<rect width="64" height="64" fill="${BADGE}"/>${leaf(0.88)}`);
+const maskable = svg(`<rect width="64" height="64" fill="${BADGE}"/>${leaf(0.64)}`);
 
 // A filled badge rather than a bare outline: at 16px a silhouette survives and
 // hairlines do not.

@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import History from './History.jsx';
-import { monsteraLeaf } from './monstera.js';
+import { MONSTERA_CREDIT, monsteraLeaf } from './monstera.js';
 import PlantPhoto from './PlantPhoto.jsx';
 import Sparkline from './Sparkline.jsx';
 import useLive from './useLive.js';
@@ -228,13 +228,8 @@ function Icon({ name, color, size = 20 }) {
 }
 
 // The logo, from the same leaf as the favicon and the home-screen icons (see
-// monstera.js), in the theme's own greens so it follows dark mode. The slits
-// are painted in the mark's background colour, which is what makes them holes.
-const MONSTERA_MARK = monsteraLeaf({
-    fill: 'var(--status-good)',
-    cut: 'var(--surface-hero)',
-    scale: 0.86,
-});
+// monstera.js), in the theme's own green so it follows dark mode.
+const MONSTERA_MARK = monsteraLeaf({ fill: 'var(--status-good)', scale: 0.76 });
 
 function MonsteraMark() {
     return (
@@ -330,7 +325,7 @@ export default function App() {
         <div className="wrap">
             <header>
                 <div className="brand">
-                    <span className="brand-mark">
+                    <span className="brand-mark" title={MONSTERA_CREDIT}>
                         <MonsteraMark />
                     </span>
                     <div>

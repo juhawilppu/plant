@@ -524,3 +524,13 @@ rather than the return code.
    deploy then puts both back and restarts the broker. Excluding the two paths
    from the rsync would make deploys gap-free for the node as well as for the
    dashboard.
+
+---
+
+## Credits
+
+The logo, favicon and home-screen icons are
+[Monstera leaf](https://game-icons.net/1x1/delapouite/monstera-leaf.html) by
+[Delapouite](https://delapouite.com), from [game-icons.net](https://game-icons.net),
+under [CC BY 3.0](https://creativecommons.org/licenses/by/3.0/). It is recoloured
+and placed on a badge by `web/scripts/icons.mjs`; the leaf itself is unchanged.

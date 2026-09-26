@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import History from './History.jsx';
+import { monsteraLeaf } from './monstera.js';
 import PlantPhoto from './PlantPhoto.jsx';
 import Sparkline from './Sparkline.jsx';
 import useLive from './useLive.js';
@@ -226,23 +227,24 @@ function Icon({ name, color, size = 20 }) {
     );
 }
 
-function LeafMark() {
+// The logo, from the same leaf as the favicon and the home-screen icons (see
+// monstera.js), in the theme's own greens so it follows dark mode. The slits
+// are painted in the mark's background colour, which is what makes them holes.
+const MONSTERA_MARK = monsteraLeaf({
+    fill: 'var(--status-good)',
+    cut: 'var(--surface-hero)',
+    scale: 0.86,
+});
+
+function MonsteraMark() {
     return (
         <svg
-            width="30"
-            height="30"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="var(--status-good)"
-            strokeWidth="1.8"
-            strokeLinecap="round"
-            strokeLinejoin="round"
+            width="54"
+            height="54"
+            viewBox="0 0 64 64"
             aria-hidden="true"
-        >
-            <path d="M12 21V11" />
-            <path d="M12 12C12 7.5 15 4.2 20 3.6c.5 4.9-2.4 8.3-8 8.4Z" />
-            <path d="M12 16c-4.3-.1-6.6-2.6-6.2-6.4C9.6 10.1 11.6 12.4 12 16Z" />
-        </svg>
+            dangerouslySetInnerHTML={{ __html: MONSTERA_MARK }}
+        />
     );
 }
 
@@ -329,7 +331,7 @@ export default function App() {
             <header>
                 <div className="brand">
                     <span className="brand-mark">
-                        <LeafMark />
+                        <MonsteraMark />
                     </span>
                     <div>
                         <h1>{pending ? <span className="skeleton skel-title" /> : plantName}</h1>

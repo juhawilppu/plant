@@ -1,5 +1,5 @@
 import React, { useCallback, useMemo, useState } from 'react';
-import useWidth, { segmentsOf } from './useWidth.js';
+import useWidth, { gapBefore, linePath, segmentsOf, timeScale } from './useWidth.js';
 
 // One measure over time, hand-rolled in SVG rather than pulled from a chart
 // library: the mark specs here (2.6px line, >=10px end dot with a surface ring,
@@ -60,6 +60,7 @@ export default function TimeSeries({
     markers = [], // [{ index, label }] - events worth naming on the x axis
     bandLabel = 'low to high', // what lo/hi mean, for the tooltip and the label
     pending = false, // first fetch still in flight: no data, and no claim either
+    maxGapMs = Infinity, // neighbours further apart than this have missing data between them
     className = '',
 }) {
     const [hostRef, width] = useWidth(640, 260);
@@ -85,24 +86,29 @@ export default function TimeSeries({
     const plotW = Math.max(10, width - PAD.left - PAD.right);
     const plotH = height - PAD.top - PAD.bottom;
 
-    const x = useCallback(
-        (i) => PAD.left + (points.length <= 1 ? plotW / 2 : (i / (points.length - 1)) * plotW),
-        [points.length, plotW],
-    );
+    const { x, indexAt } = useMemo(() => timeScale(points, PAD.left, plotW), [points, plotW]);
     const y = useCallback(
         (v) => PAD.top + plotH - ((v - lo) / (hi - lo || 1)) * plotH,
         [lo, hi, plotH],
     );
 
-    const segments = useMemo(() => segmentsOf(points, x, y), [points, x, y]);
+    const segments = useMemo(
+        () => segmentsOf(points, x, y, maxGapMs),
+        [points, x, y, maxGapMs],
+    );
 
     // The band breaks exactly where the line does: a bucket with no samples has
-    // no average and no spread either, so neither is drawn across the gap.
+    // no average and no spread either, so neither is drawn across the gap -
+    // whether the bucket came back empty or did not come back at all.
     const bandPaths = useMemo(() => {
         if (!hasBand) return [];
         const runs = [];
         let run = [];
         points.forEach((p, i) => {
+            if (run.length && gapBefore(points, i, maxGapMs)) {
+                runs.push(run);
+                run = [];
+            }
             if (p.lo == null || p.hi == null) {
                 if (run.length) runs.push(run);
                 run = [];
@@ -121,7 +127,7 @@ export default function TimeSeries({
                     .join(' ') +
                 ' Z',
         );
-    }, [points, x, y, hasBand]);
+    }, [points, x, y, hasBand, maxGapMs]);
 
     const lastIdx = useMemo(() => {
         for (let i = points.length - 1; i >= 0; i--) if (points[i].v != null) return i;
@@ -136,9 +142,7 @@ export default function TimeSeries({
         const px = ((e.clientX - rect.left) / rect.width) * width;
         // The crosshair snaps to the nearest data position, so the reader aims
         // at a time rather than at a 2px line.
-        const ratio = (px - PAD.left) / plotW;
-        const idx = Math.round(ratio * (points.length - 1));
-        setCursor(Math.max(0, Math.min(points.length - 1, idx)));
+        setCursor(indexAt(px));
     };
 
     const onKeyDown = (e) => {
@@ -244,7 +248,7 @@ export default function TimeSeries({
                 {segments.map((seg, i) => (
                     <path
                         key={`l${i}`}
-                        d={seg.map(([px, py], j) => `${j ? 'L' : 'M'} ${px} ${py}`).join(' ')}
+                        d={linePath(seg)}
                         fill="none"
                         stroke={color}
                         strokeWidth="2.6"

@@ -1,5 +1,5 @@
 import React, { useCallback, useMemo } from 'react';
-import useWidth, { segmentsOf } from './useWidth.js';
+import useWidth, { linePath, segmentsOf, timeScale } from './useWidth.js';
 
 // The shape of a tile's last two days, with no axes and no readable values -
 // the tile's own big number carries the value. Purely a trend cue, so it is
@@ -8,6 +8,10 @@ import useWidth, { segmentsOf } from './useWidth.js';
 
 const HEIGHT = 46;
 const PAD = { top: 6, right: 8, bottom: 6 };
+
+// The node reports once a minute, so this much silence is an outage, and the
+// line breaks there. A single late or retried reading stays well inside it.
+const MAX_GAP_MS = 5 * 60 * 1000;
 
 // `ring` is the surface the end dot sits on. It defaults to the card white, and
 // the hero passes its own green: a white ring on the green hero would read as a
@@ -25,16 +29,13 @@ export default function Sparkline({ points, color, ring = 'var(--surface-1)' }) 
     const plotW = Math.max(10, width - PAD.right);
     const plotH = HEIGHT - PAD.top - PAD.bottom;
 
-    const x = useCallback(
-        (i) => (points.length <= 1 ? plotW / 2 : (i / (points.length - 1)) * plotW),
-        [points.length, plotW],
-    );
+    const { x } = useMemo(() => timeScale(points, 0, plotW), [points, plotW]);
     const y = useCallback(
         (v) => PAD.top + plotH - ((v - lo) / (hi - lo || 1)) * plotH,
         [lo, hi, plotH],
     );
 
-    const segments = useMemo(() => segmentsOf(points, x, y), [points, x, y]);
+    const segments = useMemo(() => segmentsOf(points, x, y, MAX_GAP_MS), [points, x, y]);
     const lastIdx = useMemo(() => {
         for (let i = points.length - 1; i >= 0; i--) if (points[i].v != null) return i;
         return -1;
@@ -75,7 +76,7 @@ export default function Sparkline({ points, color, ring = 'var(--surface-1)' }) 
                     {segments.map((seg, i) => (
                         <path
                             key={`l${i}`}
-                            d={seg.map(([px, py], j) => `${j ? 'L' : 'M'} ${px} ${py}`).join(' ')}
+                            d={linePath(seg)}
                             fill="none"
                             stroke={color}
                             strokeWidth="2.4"

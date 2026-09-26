@@ -78,6 +78,10 @@ export default function History({ device, series }) {
         };
     }, [buckets]);
 
+    // Buckets are evenly spaced, so a missing one means a stretch with no
+    // readings at all, and the line breaks across it.
+    const maxGapMs = data ? data.bucketSeconds * 1000 * 1.5 : Infinity;
+
     const spanHours = data ? (new Date(data.to) - new Date(data.from)) / 3600000 : 24 * 90;
 
     // Asking for a year of a three-day-old plant is not an error, but saying so
@@ -132,6 +136,7 @@ export default function History({ device, series }) {
                         unit="%"
                         color={series.soil}
                         points={points.soil}
+                        maxGapMs={maxGapMs}
                         spanHours={spanHours}
                         decimals={0}
                         height={250}
@@ -142,6 +147,7 @@ export default function History({ device, series }) {
                         unit="°C"
                         color={series.temp}
                         points={points.temp}
+                        maxGapMs={maxGapMs}
                         spanHours={spanHours}
                         pending={pending}
                     />
@@ -150,6 +156,7 @@ export default function History({ device, series }) {
                         unit="%"
                         color={series.humidity}
                         points={points.humidity}
+                        maxGapMs={maxGapMs}
                         spanHours={spanHours}
                         pending={pending}
                     />

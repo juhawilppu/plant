@@ -270,6 +270,9 @@ app.get('/api/readings', route(async (req, res) => {
         device,
         hours,
         calibrated: soil_raw_air != null && soil_raw_water != null,
+        // The server's clock, for the same reason the live socket sends it:
+        // the page counts the seconds since the last reading on this clock.
+        now: new Date(),
         readings: rows.map((r) => publicReading(r, soil_raw_air, soil_raw_water)),
     });
 }));

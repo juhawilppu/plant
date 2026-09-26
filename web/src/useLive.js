@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 // The live page's data: a snapshot of the last `hours` fetched over HTTP, with
 // readings pushed over the /api/live WebSocket appended as they land.
@@ -15,6 +15,14 @@ const HEARTBEAT_TIMEOUT_MS = 75 * 1000;
 const POLL_WHILE_DOWN_MS = 60 * 1000;
 const MAX_BACKOFF_MS = 30 * 1000;
 
+// The header counts the seconds since the last reading, and a reading's
+// timestamp comes from the server's clock, so the count has to run on it too.
+// The snapshot, the socket's hello and every heartbeat say what time the
+// server makes it. Each sample is late by however long it took to arrive,
+// which only ever makes the offset read low, so the best recent sample is the
+// highest: a slow 48-hour snapshot cannot drag the count a second off.
+const CLOCK_SAMPLES = 10;
+
 export default function useLive(device, hours) {
     const [snapshot, setSnapshot] = useState(null);
     const [devices, setDevices] = useState([]);
@@ -22,6 +30,16 @@ export default function useLive(device, hours) {
     const [error, setError] = useState(null);
     const [live, setLive] = useState(false);
     const [reload, setReload] = useState(0);
+    const [clockOffset, setClockOffset] = useState(0);
+    const clockSamples = useRef([]);
+
+    // Server time minus browser time, in milliseconds.
+    const sampleClock = useCallback((serverNow) => {
+        const sample = Date.parse(serverNow) - Date.now();
+        if (Number.isNaN(sample)) return;
+        clockSamples.current = [...clockSamples.current, sample].slice(-CLOCK_SAMPLES);
+        setClockOffset(Math.max(...clockSamples.current));
+    }, []);
 
     useEffect(() => {
         let cancelled = false;
@@ -35,6 +53,7 @@ export default function useLive(device, hours) {
         ])
             .then(([snap, devs]) => {
                 if (cancelled) return;
+                if (snap.now) sampleClock(snap.now);
                 setSnapshot(snap);
                 setDevices(devs);
                 setError(null);
@@ -43,7 +62,7 @@ export default function useLive(device, hours) {
         return () => {
             cancelled = true;
         };
-    }, [device, hours, reload]);
+    }, [device, hours, reload, sampleClock]);
 
     useEffect(() => {
         if (live) return;
@@ -105,6 +124,7 @@ export default function useLive(device, hours) {
                 } catch {
                     return;
                 }
+                if (msg.now) sampleClock(msg.now);
                 if (msg.type !== 'reading' || msg.device !== device) return;
                 const reading = msg.reading;
                 setPushed((prev) => {
@@ -125,7 +145,7 @@ export default function useLive(device, hours) {
             clearTimeout(retry);
             drop();
         };
-    }, [device, hours]);
+    }, [device, hours, sampleClock]);
 
     // The snapshot plus whatever the socket delivered after its last reading,
     // with anything that has aged out of the window dropped. Nothing re-fetches
@@ -142,5 +162,5 @@ export default function useLive(device, hours) {
         return { ...snapshot, readings };
     }, [snapshot, pushed, hours]);
 
-    return { data, devices, error, live };
+    return { data, devices, error, live, clockOffset };
 }

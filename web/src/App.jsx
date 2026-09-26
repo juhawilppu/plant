@@ -49,9 +49,9 @@ function verdictFor(pct) {
     };
 }
 
-// The header answers "is the node still alive?", so the age of the last reading
-// matters more than its wall-clock time. Minutes stay exact up to an hour, then
-// the unit widens — nobody needs "just now" resolution on a two-day-old reading.
+// How long ago something happened, in the units a sentence wants: the watering
+// note says "Watered 3 hours ago", and nobody needs that to the second. The
+// header's count is the precise one; see LastSeen.
 function relativeAge(iso, now) {
     const mins = Math.floor((now - new Date(iso).getTime()) / 60000);
     if (mins < 1) return 'just now';
@@ -67,11 +67,90 @@ function relativeAge(iso, now) {
 // readings - long enough to rule out a WiFi blip or a broker restart, short
 // enough to catch a dead node well inside the hour. The dot only ever restates
 // what the words beside it already say.
-function freshnessColor(iso, now) {
-    const mins = (now - new Date(iso).getTime()) / 60000;
+function freshnessColor(ageMs) {
+    const mins = ageMs / 60000;
     if (mins > 60) return 'var(--status-critical)';
     if (mins > 15) return 'var(--status-warning)';
     return 'var(--status-good)';
+}
+
+// A count shown to the second has to hold still while it ticks: tabular
+// figures keep 58, 59 and 60 the same width, so the pill does not twitch.
+const N = ({ children }) => <span className="lastseen-n">{children}</span>;
+
+// The age of the last reading, counting up until the next one resets it. To
+// the second while the node keeps its one-a-minute rhythm, with slack for one
+// late reading. Past two minutes at least one is missing, and the count carries
+// on in minutes and seconds, then hours and minutes - still ticking, so the
+// page visibly has not given up either.
+function ageText(ms) {
+    const secs = Math.floor(ms / 1000);
+    if (secs < 1) return 'just now';
+    if (secs < 120) return secs === 1 ? <><N>1</N> second ago</> : <><N>{secs}</N> seconds ago</>;
+    const mins = Math.floor(secs / 60);
+    if (mins < 60) return <><N>{mins}</N> min <N>{secs % 60}</N> s ago</>;
+    return <><N>{Math.floor(mins / 60)}</N> h <N>{mins % 60}</N> min ago</>;
+}
+
+// The header's answer to "is the node still alive?". It has a clock of its own,
+// so only this pill re-renders every second and not the sparklines, and that
+// clock wakes just as the age crosses each whole second rather than up to a
+// second late, as a free-running interval would. The age is measured on the
+// server's clock (clockOffset, see useLive), because the reading's timestamp is
+// the server's: a browser a second out would otherwise count wrong, or below 0.
+function LastSeen({ latest, pending, unavailable, live, clockOffset }) {
+    const recorded = latest ? Date.parse(latest.recorded_at) : null;
+    const [now, setNow] = useState(() => Date.now());
+
+    useEffect(() => {
+        if (recorded == null) return undefined;
+        let timer;
+        const tick = () => {
+            const t = Date.now();
+            setNow(t);
+            const age = t + clockOffset - recorded;
+            timer = setTimeout(tick, 1000 - (((age % 1000) + 1000) % 1000) + 10);
+        };
+        tick();
+        return () => clearTimeout(timer);
+    }, [recorded, clockOffset]);
+
+    const age = recorded == null ? null : Math.max(0, now + clockOffset - recorded);
+    const at = latest
+        ? new Date(latest.recorded_at).toLocaleString([], {
+              day: 'numeric',
+              month: 'short',
+              hour: '2-digit',
+              minute: '2-digit',
+              second: '2-digit',
+          })
+        : undefined;
+
+    return (
+        <div className="lastseen" title={at}>
+            <span
+                className="dot"
+                style={{
+                    background:
+                        age != null && !pending ? freshnessColor(age) : 'var(--text-muted)',
+                }}
+            />
+            <span>
+                {pending ? (
+                    'Checking…'
+                ) : unavailable ? (
+                    'Unavailable'
+                ) : age != null ? (
+                    <>Last reading {ageText(age)}</>
+                ) : (
+                    'No readings yet'
+                )}
+            </span>
+            {/* Only while the socket is up: without it the page is polling,
+                which is still correct, just not instant. */}
+            {live && !pending ? <span className="lastseen-live">Live</span> : null}
+        </div>
+    );
 }
 
 // Soil moisture that climbs more than five points within five minutes is a
@@ -200,12 +279,13 @@ export default function App() {
     const [now, setNow] = useState(() => Date.now());
 
     // Live on both pages: the history view has its own aggregates, but the
-    // header's "last reading 4 min ago" is about the node being alive, which is
-    // just as worth knowing while looking backwards.
-    const { data, devices, error, live } = useLive('plant-01', LIVE_HOURS);
+    // header's "Last reading 42 seconds ago" is about the node being alive,
+    // which is just as worth knowing while looking backwards.
+    const { data, devices, error, live, clockOffset } = useLive('plant-01', LIVE_HOURS);
 
-    // The age label has to keep counting between readings, so it gets its own
-    // clock rather than riding on the data.
+    // The watering note's "Watered 3 hours ago" has to move on between
+    // readings, so it gets a clock rather than riding on the data. Coarse is
+    // enough for a sentence; the header's count has its own, per second.
     useEffect(() => {
         const id = setInterval(() => setNow(Date.now()), 30 * 1000);
         return () => clearInterval(id);
@@ -231,16 +311,6 @@ export default function App() {
 
     const verdict = verdictFor(latest?.soil_pct ?? null);
     const watering = useMemo(() => findWatering(readings), [readings]);
-
-    const lastSeenAt = latest
-        ? new Date(latest.recorded_at).toLocaleString([], {
-              day: 'numeric',
-              month: 'short',
-              hour: '2-digit',
-              minute: '2-digit',
-          })
-        : null;
-    const lastSeenAge = latest ? relativeAge(latest.recorded_at, now) : null;
 
     // The plant's own name leads, because that is what the reader came for; the
     // device id is only a fallback for a node that has not been labelled.
@@ -268,27 +338,13 @@ export default function App() {
                         </div>
                     </div>
                 </div>
-                <div className="lastseen" title={lastSeenAt ?? undefined}>
-                    <span
-                        className="dot"
-                        style={{
-                            background:
-                                latest && !pending
-                                    ? freshnessColor(latest.recorded_at, now)
-                                    : 'var(--text-muted)',
-                        }}
-                    />
-                    {pending
-                        ? 'Checking…'
-                        : error && data == null
-                          ? 'Unavailable'
-                          : latest
-                            ? `Last reading ${lastSeenAge}`
-                            : 'No readings yet'}
-                    {/* Only while the socket is up: without it the page is polling,
-                        which is still correct, just not instant. */}
-                    {live && !pending ? <span className="lastseen-live">Live</span> : null}
-                </div>
+                <LastSeen
+                    latest={latest}
+                    pending={pending}
+                    unavailable={error != null && data == null}
+                    live={live}
+                    clockOffset={clockOffset}
+                />
             </header>
 
             {error ? (

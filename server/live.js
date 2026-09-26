@@ -8,9 +8,14 @@
 // GET /api/readings and uses this only for what comes after.
 //
 // Messages, all JSON:
-//   { type: 'hello', instance }            first, naming the API instance
+//   { type: 'hello', instance, now }       first, naming the API instance
 //   { type: 'reading', device, reading }   same shape as a GET /api/readings row
-//   { type: 'heartbeat' }                  every HEARTBEAT_MS
+//   { type: 'heartbeat', now }             every HEARTBEAT_MS
+//
+// `now` is the server's clock. The dashboard counts the seconds since the last
+// reading, and a reading's timestamp is the server's, so the count has to run
+// on the server's clock too: a browser a second or two out would otherwise
+// show a count that is off by that much, or below zero.
 //
 // Two instances run behind Caddy, and the hello says which one this socket
 // landed on. Dashboards ignore it; chaos/check.mjs uses it to show that a
@@ -63,7 +68,7 @@ export function startLiveHub(server, { path, instance, latest, ready }) {
         // An unhandled 'error' event would take the whole process down with it.
         ws.on('error', (err) => console.error('live: socket error', err.message));
 
-        send(ws, { type: 'hello', instance });
+        send(ws, { type: 'hello', instance, now: new Date() });
         try {
             for (const message of await latest()) send(ws, message);
         } catch (err) {
@@ -71,8 +76,8 @@ export function startLiveHub(server, { path, instance, latest, ready }) {
         }
     });
 
-    const heartbeat = JSON.stringify({ type: 'heartbeat' });
     const timer = setInterval(() => {
+        const heartbeat = JSON.stringify({ type: 'heartbeat', now: new Date() });
         for (const ws of wss.clients) {
             if (!ws.isAlive) {
                 ws.terminate();

@@ -184,7 +184,8 @@ more than a socket bolted on:
   that vanished get freed, and sends a heartbeat message, so a browser can tell
   its own socket died silently (the usual state after a laptop sleeps) and
   reconnect. It also keeps the connection under Cloudflare's 100-second idle
-  timeout when the node is offline.
+  timeout when the node is offline. The heartbeat carries the server's clock,
+  which the header's count runs on.
 - **Polling as the fallback.** While the socket is down, the page polls every
   minute, so a network that blocks WebSockets costs freshness, not data. The
   header says **Live** only while the socket is up.
@@ -368,6 +369,12 @@ needs - the same number never gets a tile *and* a chart on one screen.
   long view every chart carries a direct end-label.
 - **Charts hold their previous render at reduced opacity while refetching** - no
   skeleton flash, no layout jump.
+- **The header counts the seconds since the last reading**, and the next reading
+  resets it. Past two minutes at least one reading is missing, and the count
+  carries on in minutes and seconds, then hours and minutes, still ticking. It
+  runs on the server's clock, because a reading's timestamp is the server's. The
+  snapshot, the socket's hello and every heartbeat carry that clock, so a
+  browser that is a few seconds out still counts true.
 - Colours are the first three slots of a validated categorical palette, fixed per
   metric so a filter can never repaint them. Worst adjacent CVD separation 9.1
   light / 8.4 dark, measured across four; the fourth, yellow, left with the

@@ -190,6 +190,10 @@ h1 {
     font-weight: 700;
 }
 
+.lastseen-n {
+    font-variant-numeric: tabular-nums;
+}
+
 .lastseen .dot {
     width: 10px;
     height: 10px;

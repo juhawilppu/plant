@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import History from './History.jsx';
+import PlantPhoto from './PlantPhoto.jsx';
 import Sparkline from './Sparkline.jsx';
 import useLive from './useLive.js';
 
@@ -310,82 +311,85 @@ export default function App() {
             ) : error && data == null ? null : (
                 <>
                     <div className="hero-card">
-                        <div className="hero">
-                            <div>
-                                <div className="hero-label">Soil moisture</div>
-                                {/* With no reading at all there is no value slot
-                                    either: an em dash at 132px is a white bar,
-                                    which reads as a skeleton that never resolved
-                                    rather than as "nothing to report". The
-                                    sentence below says it in words instead. */}
-                                {pending ? (
-                                    <div className="hero-value">
-                                        <span className="skeleton skel-hero" />
-                                    </div>
-                                ) : latest == null ? null : (
-                                    <div className="hero-value">
-                                        {latest.soil_pct == null
-                                            ? '—'
-                                            : `${latest.soil_pct.toFixed(0)}%`}
-                                    </div>
+                        <PlantPhoto />
+                        <div className="hero-body">
+                            <div className="hero">
+                                <div>
+                                    <div className="hero-label">Soil moisture</div>
+                                    {/* With no reading at all there is no value slot
+                                        either: an em dash at 132px is a white bar,
+                                        which reads as a skeleton that never resolved
+                                        rather than as "nothing to report". The
+                                        sentence below says it in words instead. */}
+                                    {pending ? (
+                                        <div className="hero-value">
+                                            <span className="skeleton skel-hero" />
+                                        </div>
+                                    ) : latest == null ? null : (
+                                        <div className="hero-value">
+                                            {latest.soil_pct == null
+                                                ? '—'
+                                                : `${latest.soil_pct.toFixed(0)}%`}
+                                        </div>
+                                    )}
+                                </div>
+                                {/* No verdict until there is a reading to have one
+                                    about - an empty window is not a dry plant, and
+                                    it is not an uncalibrated probe either. */}
+                                {pending || latest == null ? null : (
+                                    <span className="verdict">
+                                        <Icon name={verdict.icon} color={verdict.color} />
+                                        {verdict.text}
+                                    </span>
                                 )}
                             </div>
-                            {/* No verdict until there is a reading to have one
-                                about - an empty window is not a dry plant, and
-                                it is not an uncalibrated probe either. */}
-                            {pending || latest == null ? null : (
-                                <span className="verdict">
-                                    <Icon name={verdict.icon} color={verdict.color} />
-                                    {verdict.text}
-                                </span>
+
+                            {pending ? (
+                                <div className="meter">
+                                    <div style={{ width: 0 }} />
+                                </div>
+                            ) : latest == null ? (
+                                <div className="hero-aside">
+                                    Nothing has arrived in the last {LIVE_HOURS} hours. Either the
+                                    node has stopped publishing, or it has not been running that
+                                    long yet.
+                                </div>
+                            ) : latest.soil_pct != null ? (
+                                <>
+                                    <div className="meter">
+                                        <div
+                                            style={{
+                                                // The number can read past 100% (see
+                                                // soilPercent in server/index.js), but the
+                                                // bar is a fraction of its own box and has
+                                                // nowhere to go past full width.
+                                                width: `${Math.min(100, Math.max(2, latest.soil_pct))}%`,
+                                                background: verdict.color,
+                                            }}
+                                        />
+                                    </div>
+                                    {/* The lead measure gets the same trend cue the tiles
+                                        get, so dropping the chart grid does not cost the
+                                        dry-down its shape. */}
+                                    <div className="hero-spark">
+                                        <Sparkline
+                                            points={series.soil}
+                                            color={SERIES.soil}
+                                            ring="var(--surface-hero)"
+                                        />
+                                    </div>
+                                    {heroNote ? <div className="hero-note">{heroNote}</div> : null}
+                                </>
+                            ) : (
+                                <div className="hero-aside">
+                                    The probe has no calibration yet, so a percentage would be
+                                    meaningless. Record the raw value in air and in water, then set{' '}
+                                    <code>soil_raw_air</code> and <code>soil_raw_water</code> on the
+                                    device row. Latest raw reading:{' '}
+                                    <strong>{latest?.soil_raw ?? '—'}</strong>.
+                                </div>
                             )}
                         </div>
-
-                        {pending ? (
-                            <div className="meter">
-                                <div style={{ width: 0 }} />
-                            </div>
-                        ) : latest == null ? (
-                            <div className="hero-aside">
-                                Nothing has arrived in the last {LIVE_HOURS} hours. Either the
-                                node has stopped publishing, or it has not been running that
-                                long yet.
-                            </div>
-                        ) : latest.soil_pct != null ? (
-                            <>
-                                <div className="meter">
-                                    <div
-                                        style={{
-                                            // The number can read past 100% (see
-                                            // soilPercent in server/index.js), but the
-                                            // bar is a fraction of its own box and has
-                                            // nowhere to go past full width.
-                                            width: `${Math.min(100, Math.max(2, latest.soil_pct))}%`,
-                                            background: verdict.color,
-                                        }}
-                                    />
-                                </div>
-                                {/* The lead measure gets the same trend cue the tiles
-                                    get, so dropping the chart grid does not cost the
-                                    dry-down its shape. */}
-                                <div className="hero-spark">
-                                    <Sparkline
-                                        points={series.soil}
-                                        color={SERIES.soil}
-                                        ring="var(--surface-hero)"
-                                    />
-                                </div>
-                                {heroNote ? <div className="hero-note">{heroNote}</div> : null}
-                            </>
-                        ) : (
-                            <div className="hero-aside">
-                                The probe has no calibration yet, so a percentage would be
-                                meaningless. Record the raw value in air and in water, then set{' '}
-                                <code>soil_raw_air</code> and <code>soil_raw_water</code> on the
-                                device row. Latest raw reading:{' '}
-                                <strong>{latest?.soil_raw ?? '—'}</strong>.
-                            </div>
-                        )}
                     </div>
 
                     <div className="tiles">

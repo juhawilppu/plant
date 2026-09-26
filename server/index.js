@@ -412,6 +412,9 @@ app.get('/api/history', route(async (req, res) => {
 // one container and no CORS. In development Vite serves it on 5173 and proxies
 // /api here instead, so this directory simply does not exist yet.
 const webDist = join(dirname(fileURLToPath(import.meta.url)), '..', 'web', 'dist');
+// Express 4's type table predates AVIF and would send the plant photo as
+// application/octet-stream, which browsers only render by sniffing it.
+express.static.mime.define({ 'image/avif': ['avif'] });
 app.use(express.static(webDist));
 
 // Last, so it catches whatever route() passes on. The detail goes to the log,

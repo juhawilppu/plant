@@ -1,9 +1,17 @@
 # Plant vitals
 
-One houseplant, watched far harder than it needs. An ESP32 on the windowsill
+One houseplant, watched far harder than it needs. An ESP32 beside the pot
 measures soil moisture, air temperature and humidity every minute, and the
 dashboard at **https://plant.juhawilppu.com** shows each reading the moment it
 lands.
+
+<p align="center">
+  <img src="docs/images/monstera.jpg" width="49%" alt="A Monstera climbing a moss pole in a white pot by the window, with the ESP32 node in a clear case on the floor beside it" />
+  <img src="docs/images/probe.jpg" width="49%" alt="The capacitive soil moisture probe pushed into the soil at the base of the plant, with its three-wire lead" />
+</p>
+<p align="center">
+  <sub><b>The Monstera</b>, with the node on the floor beside it &nbsp;·&nbsp; <b>The probe</b>, reading soil moisture where the roots are</sub>
+</p>
 
 A minute's poll against a single server would do the job. This project is
 over-engineered on purpose, as a place to build things properly:
@@ -24,7 +32,7 @@ Hardware, parts list and wiring: **`docs/hardware.md`**.
 
 ```mermaid
 flowchart TB
-    node["ESP32 on the windowsill<br/>reads its sensors every minute"]
+    node["ESP32 beside the pot<br/>reads its sensors every minute"]
     browser["Dashboard<br/>React, in the browser"]
     checker["chaos/check.mjs<br/>on a laptop"]
     cloudflare["Cloudflare"]
@@ -70,7 +78,7 @@ flowchart TB
    minutes. The dashboards on that instance reconnect to the other one, and
    **`chaos/check.mjs`** proves nothing was missed.
 
-### One reading, from the windowsill to the screen
+### One reading, from the pot to the screen
 
 ```mermaid
 sequenceDiagram

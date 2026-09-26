@@ -1,47 +1,156 @@
 # Plant vitals
 
-Soil moisture, light, air temperature and humidity from a houseplant, measured by
-an ESP32 on the windowsill, stored in Postgres on the droplet, read on a React
-dashboard.
+One houseplant, watched far harder than it needs. An ESP32 on the windowsill
+measures soil moisture, air temperature and humidity every minute, and the
+dashboard at **https://plant.juhawilppu.com** shows each reading the moment it
+lands.
+
+A minute's poll against a single server would do the job. This project is
+over-engineered on purpose, as a place to build things properly:
+
+- the node publishes over **MQTT**, with a Last Will, a retained status and
+  at-least-once delivery
+- each reading is pushed to the dashboard over a **WebSocket** instead of polled
+- the API runs as **two instances** behind a load balancer, both fed by Postgres
+  `LISTEN/NOTIFY`
+- a **chaos monkey** kills one of them at random, and a checker proves that no
+  dashboard noticed
 
 Hardware, parts list and wiring: **`docs/hardware.md`**.
 
 ---
 
-## The shape of it
+## How it works
 
-```
-ESP32 (firmware/plant_node)
-  every minute: read 3 sensors, publish JSON at QoS 1
-        |
-        |  plants/<device>/reading    the measurement
-        |  plants/<device>/status     online / offline, retained, set as the
-        |                             node's Last Will
-        v
-Mosquitto (mosquitto/config)   authenticated, per-role ACL
-        |
-        v
-server/mqtt-bridge.js   subscribes plants/+/reading, writes to Postgres
-        |               runs inside the API process, not its own container
-        v
-Postgres          devices  one row per node, holds the soil calibration
-                  readings append-only log, deduplicated on (device_id, msg_id)
-        ^
-        |
-server/index.js   Express: GET /api/readings, GET /api/history (bucketed),
-        |         GET /api/devices, POST /api/readings (kept for curl and as
-        |         a fallback), and serves the built dashboard. Runs twice, as
-        |         server-a and server-b, behind Caddy
-        |
-server/live.js    WebSocket on /api/live: every newly stored reading is pushed
-        |         to open dashboards the moment it lands. server/feed.js hears
-        |         each one through Postgres LISTEN/NOTIFY, so both instances do
-        v
-web/              Vite + React, hand-rolled SVG charts
+```mermaid
+flowchart TB
+    node["ESP32 on the windowsill<br/>reads its sensors every minute"]
+    browser["Dashboard<br/>React, in the browser"]
+    checker["chaos/check.mjs<br/>on a laptop"]
+    cloudflare["Cloudflare"]
 
-chaos/            a chaos monkey that kills one instance now and then, and the
-                  checker that proves no dashboard noticed
+    subgraph droplet["The droplet: one 1 GB box, Docker Compose"]
+        mosquitto["Mosquitto<br/>MQTT broker"]
+        caddy["Caddy<br/>TLS and load balancer"]
+        monkey["Chaos monkey<br/>opt-in"]
+        subgraph api["Two identical API instances"]
+            a["server-a<br/>Express, WebSocket hub,<br/>MQTT bridge"]
+            b["server-b<br/>Express, WebSocket hub,<br/>MQTT bridge"]
+        end
+        postgres[("Postgres<br/>devices, readings")]
+    end
+
+    node -- "MQTT over TLS, port 8883,<br/>straight to the box" --> mosquitto
+    browser -- "HTTPS and WebSocket" --> cloudflare
+    checker -- "WebSocket" --> cloudflare
+    cloudflare --> caddy
+    mosquitto -- "every reading,<br/>to both" --> api
+    caddy -- "round robin,<br/>health-checked" --> api
+    monkey -. "kills one now and then,<br/>brings it back" .-> api
+    api <-- "INSERT + NOTIFY,<br/>LISTEN for new rows" --> postgres
+
+    classDef chaos stroke:#e5484d,stroke-width:2px,stroke-dasharray:5 3
+    class monkey,checker chaos
 ```
+
+1. The **ESP32** reads its sensors once a minute and publishes the reading to
+   **Mosquitto** over MQTT with TLS. It connects to the box directly, because
+   Cloudflare only carries HTTP.
+2. Both **API instances** receive every reading and race to insert it into
+   **Postgres**. The unique index on `(device_id, msg_id)` lets exactly one
+   insert win.
+3. The winning insert raises a `NOTIFY` in the same statement. **Both**
+   instances `LISTEN`, read the new row back, and push it down every WebSocket
+   they hold.
+4. The **dashboard** loads 48 hours over HTTP once, then adds whatever the
+   socket pushes. It reaches the instances through **Cloudflare** and
+   **Caddy**, which round-robins between them and skips one whose `/health`
+   fails.
+5. The **chaos monkey**, when released, kills one instance at random every few
+   minutes. The dashboards on that instance reconnect to the other one, and
+   **`chaos/check.mjs`** proves nothing was missed.
+
+### One reading, from the windowsill to the screen
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant N as ESP32
+    participant M as Mosquitto
+    participant A as server-a
+    participant B as server-b
+    participant P as Postgres
+    participant D as A dashboard on server-b
+
+    N->>M: publish plants/plant-01/reading (QoS 1, msg_id 4711)
+    par Both bridges hear every reading
+        M->>A: reading 4711
+    and
+        M->>B: reading 4711
+    end
+    A->>P: INSERT and pg_notify, in one statement
+    B->>P: INSERT, same msg_id
+    Note over P: The unique index lets one insert win.<br/>The other is a no-op and notifies nothing.
+    P-->>A: NOTIFY readings (row id), on commit
+    P-->>B: NOTIFY readings (row id), on commit
+    B->>P: read the row back by id
+    B->>D: reading, over the WebSocket
+    Note over A: server-a does the same<br/>for its own dashboards
+```
+
+server-b lost the race, and its dashboards still get the reading. Before
+`LISTEN/NOTIFY`, only the instance that won the insert pushed it, so each
+dashboard silently missed whatever its own instance lost the race for.
+
+### When the monkey kills an instance
+
+```mermaid
+sequenceDiagram
+    participant C as Chaos monkey
+    participant D as Dashboard
+    participant K as Caddy
+    participant A as server-a
+    participant B as server-b
+
+    Note over D,A: The dashboard's socket happens to be on server-a
+    C->>C: both instances healthy? pick one at random
+    C-xA: SIGKILL (a crash) or SIGTERM (a clean stop)
+    A--xD: socket closes: dropped, or 1012 service restart
+    Note over D: Live goes off, retry in 0.5-1 s
+    D->>K: open /api/live again
+    K--xA: dial fails, or A is already out of rotation
+    K->>B: tries the twin
+    B->>D: hello, instance b
+    B->>D: the latest stored reading
+    D->>K: re-fetch the 48-hour snapshot
+    Note over D: Live again, nothing missed
+    C->>A: docker start, 20 s later
+    Note over K,A: /health passes, A is back in rotation
+```
+
+The WebSocket itself does not survive: it is a TCP connection owned by the
+process that died. What survives is the stream. The page reconnects within
+about a second, and the re-fetch covers anything stored while it was away.
+
+### Where things live
+
+| Path | What |
+|---|---|
+| `firmware/plant_node/` | The ESP32 sketch |
+| `mosquitto/config/` | Broker config, and the ACL that gives the node and the bridge opposite rights |
+| `server/index.js` | The API: `GET /api/readings`, `/api/history`, `/api/devices`, `POST /api/readings` (kept for curl and as a fallback), `/health`; also serves the built dashboard |
+| `server/mqtt-bridge.js` | Subscribes to the broker and hands each reading to `ingest()` |
+| `server/feed.js` | The Postgres `LISTEN` that tells each instance about every new row |
+| `server/live.js` | The WebSocket hub on `/api/live` |
+| `db/schema.sql` | `devices`, one row per node with its soil calibration, and `readings`, an append-only log |
+| `web/` | The dashboard: Vite, React, hand-rolled SVG charts |
+| `caddy/Caddyfile` | TLS, and the load balancer in front of the two instances |
+| `chaos/` | `monkey.sh`, which kills instances, and `check.mjs`, which proves the dashboards did not notice |
+| `deploy.sh`, `sync-certs.sh` | The deploy, and keeping the broker's certificate fresh |
+
+---
+
+## Why it is built this way
 
 ### Live updates, given a minute's poll would do
 
@@ -82,20 +191,17 @@ node -e "new WebSocket('wss://plant.juhawilppu.com/api/live').onmessage = (e) =>
 
 The API runs twice on the one box, as `server-a` and `server-b`, from the same
 image. Caddy round-robins between them, checks `/health` on each every two
-seconds, and retries a request that dials a dead one on the other. A chaos
-monkey (`chaos/monkey.sh`) can be let loose to kill one of them at random.
-A houseplant needs none of this; the project is over-engineered on purpose.
+seconds, and retries a request that dials a dead one on the other. A houseplant
+needs none of this.
 
-**What survives is the stream, not the connection.** A WebSocket is a TCP
-connection owned by one process, and when the monkey kills that process the
-connection goes with it. What must survive is what the dashboard shows. The
-page reconnects, lands on the other instance, and ends up missing nothing:
+**What survives is the stream, not the connection.** When an instance dies, the
+sockets it held die with it. The promise is about what the dashboard shows:
 
 - no reading is missing, and none is shown twice
 - the page is back to **Live** within a couple of seconds
 
-The **Live** badge blinks off for that second or so, and is left to. It says
-Live only while the socket is up, and for that second it is not.
+The **Live** badge blinks off for that second or so, on purpose. It says Live
+only while the socket is up, and for that second it is not.
 
 **The bug a second instance would have brought.** Each instance runs its own
 MQTT bridge, so both receive every reading and both race to insert it. The
@@ -204,6 +310,11 @@ The bridge trusts the **topic** for device identity, not the `device_id` in the
 payload, because the ACL is written in terms of topics - trusting the body would
 let one node write history for another.
 
+| Topic | What |
+|---|---|
+| `plants/<device>/reading` | The measurement, as JSON, at QoS 1 |
+| `plants/<device>/status` | `online` or `offline`, retained, and set as the node's Last Will |
+
 ### Calibration lives in the database, not the firmware
 
 The node sends the **raw 12-bit ADC value** and the server converts it to a
@@ -218,11 +329,52 @@ capacitive reading genuinely does not mean anything.
 
 ---
 
+## The dashboard
+
+Two pages, and the split is the design. **Now** (`/`) answers "does the plant
+need anything?"; **the long view** (`#/history`) answers "what has been
+happening?". Every measure appears exactly once on each, in the form that page
+needs - the same number never gets a tile *and* a chart on one screen.
+
+- **Now** is the last 48 hours: one hero figure, three stat tiles, and a
+  sparkline under each as a trend cue only. Anything with axes lives on the
+  other page. 48 hours because that is the window where a reading still implies
+  an action - long enough to show last night as well as this one.
+- **The long view** is 1 / 3 / 6 / 12 months or all time, bucketed server-side by
+  `GET /api/history`. A year is ~525k rows, so the server sends one average per
+  bucket with that bucket's low and high, and the chart draws the average as the
+  line and the spread as a band behind it.
+- **Buckets snap to whole days past a fortnight.** A sub-day bucket still
+  straddles the day/night cycle, so the line keeps swinging mark to mark and
+  fills in solid once the marks are a pixel apart. At daily buckets the line is
+  the daily mean, which actually trends, and the swing moves into the band.
+- **No dual-axis charts.** Temperature and humidity are different scales, so they
+  are different charts. Two y-axes on one plot is the single most misleading
+  thing a monitoring dashboard can do.
+- **One hero figure**, soil moisture, because it is the only reading that implies
+  an action. The verdict beside it ships an icon *and* words, never colour alone,
+  and it does not appear at all until there is a reading to have a verdict about.
+- **No value is encoded by hue alone.** The light-mode aqua sits below
+  3:1 against the surface, so that relief is required rather than decorative: on
+  *now* every measure states its value as text beside its colour key, and on the
+  long view every chart carries a direct end-label.
+- **Charts hold their previous render at reduced opacity while refetching** - no
+  skeleton flash, no layout jump.
+- Colours are the first three slots of a validated categorical palette, fixed per
+  metric so a filter can never repaint them. Worst adjacent CVD separation 9.1
+  light / 8.4 dark, measured across four; the fourth, yellow, left with the
+  broken light sensor.
+- **Light is not shown.** The BH1750 is broken and is not being replaced. The
+  firmware and API still carry `lux`, so a working sensor would only need the
+  tile and the chart back.
+
+---
+
 ## Running it locally
 
 ```sh
 cp .env.example .env          # then: openssl rand -hex 24  -> INGEST_TOKEN
-docker compose up -d postgres # schema applied on first boot
+docker compose --profile server up -d postgres   # schema applied on first boot
 
 cd server && npm install && cd ..
 node server/seed-demo.js      # a week of plausible fake readings, for the UI
@@ -233,8 +385,17 @@ node server/index.js          # API on :8090
 cd web && npm install && npm run dev   # dashboard on :5173, proxies /api to 8090
 ```
 
+`--profile server` is needed even though only Postgres starts: Caddy depends on
+the API instances, which live in that profile, and compose rejects the whole
+file when it cannot see them.
+
 For a production-shaped run instead, `npm run build` in `web/` and the API serves
-the built dashboard itself at `http://localhost:8090/`.
+the built dashboard itself at `http://localhost:8090/`. The checker works
+against it too, as long as readings are arriving:
+
+```sh
+node chaos/check.mjs http://localhost:8090
+```
 
 Watching the live stream, which is the debugging ergonomics MQTT buys:
 
@@ -263,8 +424,8 @@ docker exec plant-vitals-postgres psql -U postgres -d plant_vitals -c 'truncate 
 
 ## The server
 
-Deployed and running on **185.14.186.98** (Ubuntu 24.04, 961 MB, plus the
-512 MB swapfile `deploy.sh` creates if there is none).
+Deployed and running on **185.14.186.98** (Ubuntu 24.04, 961 MB of memory and
+a 512 MB swapfile, which `deploy.sh` creates when a box has none).
 
 | What | Where |
 |---|---|
@@ -342,44 +503,9 @@ rather than the return code.
    costs nothing.
 2. **The read API and dashboard are public.** Only plant telemetry, but readable
    by anyone with the URL.
-
----
-
-## The dashboard
-
-Two pages, and the split is the design. **Now** (`/`) answers "does the plant
-need anything?"; **the long view** (`#/history`) answers "what has been
-happening?". Every measure appears exactly once on each, in the form that page
-needs - the same number never gets a tile *and* a chart on one screen.
-
-- **Now** is the last 48 hours: one hero figure, three stat tiles, and a
-  sparkline under each as a trend cue only. Anything with axes lives on the
-  other page. 48 hours because that is the window where a reading still implies
-  an action - long enough to show last night as well as this one.
-- **The long view** is 1 / 3 / 6 / 12 months or all time, bucketed server-side by
-  `GET /api/history`. A year is ~525k rows, so the server sends one average per
-  bucket with that bucket's low and high, and the chart draws the average as the
-  line and the spread as a band behind it.
-- **Buckets snap to whole days past a fortnight.** A sub-day bucket still
-  straddles the day/night cycle, so the line keeps swinging mark to mark and
-  fills in solid once the marks are a pixel apart. At daily buckets the line is
-  the daily mean, which actually trends, and the swing moves into the band.
-- **No dual-axis charts.** Temperature and humidity are different scales, so they
-  are different charts. Two y-axes on one plot is the single most misleading
-  thing a monitoring dashboard can do.
-- **One hero figure**, soil moisture, because it is the only reading that implies
-  an action. The verdict beside it ships an icon *and* words, never colour alone,
-  and it does not appear at all until there is a reading to have a verdict about.
-- **No value is encoded by hue alone.** The light-mode aqua sits below
-  3:1 against the surface, so that relief is required rather than decorative: on
-  *now* every measure states its value as text beside its colour key, and on the
-  long view every chart carries a direct end-label.
-- **Charts hold their previous render at reduced opacity while refetching** - no
-  skeleton flash, no layout jump.
-- Colours are the first three slots of a validated categorical palette, fixed per
-  metric so a filter can never repaint them. Worst adjacent CVD separation 9.1
-  light / 8.4 dark, measured across four; the fourth, yellow, left with the
-  broken light sensor.
-- **Light is not shown.** The BH1750 is broken and is not being replaced. The
-  firmware and API still carry `lux`, so a working sensor would only need the
-  tile and the chart back.
+3. **Every deploy restarts Mosquitto**, which briefly disconnects the node. The
+   sync's `--delete` removes `mosquitto/certs/` and
+   `mosquitto/config/conf.d/tls.conf`, which exist only on the server. The
+   deploy then puts both back and restarts the broker. Excluding the two paths
+   from the rsync would make deploys gap-free for the node as well as for the
+   dashboard.

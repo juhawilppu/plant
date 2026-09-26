@@ -22,6 +22,7 @@ rsync -az --delete \
     --exclude '.git' \
     --exclude 'node_modules' \
     --exclude '.env' \
+    --exclude 'private/' \
     --exclude 'mosquitto/config/passwd' \
     ./ "$SERVER:$REMOTE/"
 

@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { readSaved, savedAtText, writeSaved } from './savedCopy.js';
 import TimeSeries from './TimeSeries.jsx';
 
 // The long view. The live page answers "does the plant need anything right
@@ -40,19 +41,33 @@ function shortDate(iso) {
 
 export default function History({ device, series }) {
     const [range, setRange] = useState('3m');
-    const [data, setData] = useState(null);
+    // What is on screen, and which range and source it came from:
+    // { range, data, source: 'saved' | 'network', savedAt? }.
+    const [shown, setShown] = useState(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
 
+    // The saved copy of this range is drawn at once, dimmed like any refetch,
+    // and the network's answer replaces it. A saved copy that turns up after
+    // the network has answered is dropped: it is only ever older. One that
+    // turns up after the network failed is exactly what it is kept for.
     useEffect(() => {
         let cancelled = false;
+        let fetched = false;
+        const key = `history?device=${encodeURIComponent(device)}&range=${range}`;
         setLoading(true);
+        readSaved(key).then((saved) => {
+            if (cancelled || fetched || !saved?.data) return;
+            setShown({ range, data: saved.data, source: 'saved', savedAt: saved.savedAt });
+        });
         fetch(`/api/history?device=${encodeURIComponent(device)}&range=${range}`)
             .then((r) => (r.ok ? r.json() : r.json().then((e) => Promise.reject(new Error(e.error)))))
             .then((d) => {
+                fetched = true;
                 if (cancelled) return;
-                setData(d);
+                setShown({ range, data: d, source: 'network' });
                 setError(null);
+                writeSaved(key, { data: d });
             })
             .catch((e) => !cancelled && setError(e.message))
             .finally(() => !cancelled && setLoading(false));
@@ -60,6 +75,11 @@ export default function History({ device, series }) {
             cancelled = true;
         };
     }, [device, range]);
+
+    // The previous range stays up, dimmed, while the next one loads. Once that
+    // load has failed with nothing saved for it, the old range's charts would
+    // sit under the new range's button, so they go.
+    const data = shown && (shown.range === range || loading) ? shown.data : null;
 
     // Same two loadings as the live page: `pending` knows nothing and must not
     // claim anything, `refetching` still has a true previous render to hold.
@@ -108,7 +128,12 @@ export default function History({ device, series }) {
             {error ? (
                 <div className="card" style={{ marginBottom: 16 }}>
                     <strong>Cannot load the history.</strong>{' '}
-                    <span style={{ color: 'var(--text-muted)' }}>{error}</span>
+                    <span style={{ color: 'var(--text-muted)' }}>
+                        {error}.
+                        {data != null && shown?.source === 'saved'
+                            ? ` Showing the copy saved on this device ${savedAtText(shown.savedAt)}.`
+                            : null}
+                    </span>
                 </div>
             ) : null}
 

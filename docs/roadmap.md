@@ -126,7 +126,7 @@ then **2.1–2.2**, then **3.1**.
 - [ ] **8.2 A notification that is worth having.** "Water me," without false
   alarms: hysteresis, a trend rather than a threshold, quiet hours, one
   notification rather than twenty. Web Push through the service worker.
-- [ ] **8.3 Offline-first PWA.** `sw.js` caches nothing on purpose today. Show
+- [x] **8.3 Offline-first PWA.** `sw.js` caches nothing on purpose today. Show
   the last known state offline, clearly labelled as old, without ever passing
   off stale data as live. *Plan:* keep the last data every view received
   (the live snapshot plus whatever the socket appended, and each history
@@ -139,6 +139,12 @@ then **2.1–2.2**, then **3.1**.
   hours". *Hard part:* never writing a saved copy back as if it were fresh,
   a saved copy that arrives after the network answer, and doing all this
   without adding flicker (see 8.7).
+  *Done:* as planned, with `web/src/savedCopy.js` holding the saved copies
+  and `sw.js` caching the shell. The header says "Refreshing", "Not updating"
+  or "Offline" before the age, and the dot goes grey. Left open: a new deploy
+  shows up one visit late (the cached page is served while the new one
+  downloads), and the shell cache keeps every old build's hashed files, since
+  nothing prunes it yet.
 - [ ] **8.4 Time zones and DST.** Daily buckets in `/api/history` around a DST
   change, and when the viewer's zone differs from the plant's.
 - [ ] **8.5 Accessibility audit.** Screen-reader output for the charts, reduced
@@ -163,6 +169,7 @@ then **2.1–2.2**, then **3.1**.
   sensor data stays network-only. A first step towards 8.3. *Hard part:* a
   service worker that caches the shell but can never serve stale readings, and
   that updates cleanly when a new build ships.
+  *Mostly done by 8.3:* the shell is cached. The photo is not preloaded yet.
 - [ ] **8.9 Sparklines you can read.** The small charts on the live page are
   confusing. Nothing on them says they cover the last 48 hours: the only
   mention is a footer line far below them. They also show no values: hovering

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { readSaved, writeSaved } from './savedCopy.js';
 
 // The live page's data: a snapshot of the last `hours` fetched over HTTP, with
 // readings pushed over the /api/live WebSocket appended as they land.
@@ -7,6 +8,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 // reconnect re-fetches the snapshot, because whatever arrived while the socket
 // was down exists only in the database. And while the socket is down, the page
 // polls instead, so a proxy that refuses WebSockets costs freshness, not data.
+//
+// Before either, the page draws the copy of this data it saved on the last
+// visit (see savedCopy.js), so it has something to show at once and something
+// to show with no network at all. `source` says which one is on screen: the
+// header says "Refreshing" over a saved copy, and a saved copy only ever gives
+// way to the network, never the other way round, whichever answers first.
 //
 // The server sends a heartbeat every 30 s. Hearing nothing for well over that
 // means the socket died without closing - the usual state of one that was open
@@ -24,8 +31,8 @@ const MAX_BACKOFF_MS = 30 * 1000;
 const CLOCK_SAMPLES = 10;
 
 export default function useLive(device, hours) {
-    const [snapshot, setSnapshot] = useState(null);
-    const [devices, setDevices] = useState([]);
+    // { snapshot, devices, source: 'saved' | 'network', savedAt? }
+    const [base, setBase] = useState(null);
     const [pushed, setPushed] = useState([]);
     const [error, setError] = useState(null);
     const [live, setLive] = useState(false);
@@ -41,6 +48,37 @@ export default function useLive(device, hours) {
         setClockOffset(Math.max(...clockSamples.current));
     }, []);
 
+    const savedKey = `live?device=${encodeURIComponent(device)}&hours=${hours}`;
+
+    // The saved copy, if there is one worth showing. One whose newest reading
+    // has already aged out of the window would draw as "nothing in 48 hours",
+    // which is a claim about the plant that nobody made, so it is skipped and
+    // the page waits for the network instead.
+    useEffect(() => {
+        let cancelled = false;
+        readSaved(savedKey).then((saved) => {
+            if (cancelled || !saved?.snapshot) return;
+            const newest = saved.snapshot.readings.at(-1)?.recorded_at;
+            if (!newest || Date.parse(newest) < Date.now() - hours * 3600 * 1000) return;
+            // No clock sample yet, so borrow the offset measured last time: the
+            // browser's clock rarely moves much between visits.
+            if (!clockSamples.current.length && Number.isFinite(saved.clockOffset))
+                setClockOffset(saved.clockOffset);
+            setBase(
+                (prev) =>
+                    prev ?? {
+                        snapshot: saved.snapshot,
+                        devices: saved.devices ?? [],
+                        source: 'saved',
+                        savedAt: saved.savedAt,
+                    },
+            );
+        });
+        return () => {
+            cancelled = true;
+        };
+    }, [savedKey, hours]);
+
     useEffect(() => {
         let cancelled = false;
         const json = (r) => {
@@ -54,8 +92,7 @@ export default function useLive(device, hours) {
             .then(([snap, devs]) => {
                 if (cancelled) return;
                 if (snap.now) sampleClock(snap.now);
-                setSnapshot(snap);
-                setDevices(devs);
+                setBase({ snapshot: snap, devices: devs, source: 'network' });
                 setError(null);
             })
             .catch((e) => !cancelled && setError(e.message));
@@ -69,6 +106,14 @@ export default function useLive(device, hours) {
         const id = setInterval(() => setReload((n) => n + 1), POLL_WHILE_DOWN_MS);
         return () => clearInterval(id);
     }, [live]);
+
+    // Coming back online is the moment a refresh is most likely to work, so
+    // it is tried then rather than at the next poll, up to a minute later.
+    useEffect(() => {
+        const onOnline = () => setReload((n) => n + 1);
+        window.addEventListener('online', onOnline);
+        return () => window.removeEventListener('online', onOnline);
+    }, []);
 
     useEffect(() => {
         const { protocol, host } = window.location;
@@ -151,16 +196,37 @@ export default function useLive(device, hours) {
     // with anything that has aged out of the window dropped. Nothing re-fetches
     // the snapshot while the socket is healthy, so this is also what keeps the
     // window sliding forward as readings arrive.
+    //
+    // Pushed readings join only a snapshot from the network. Appended to a
+    // saved copy from yesterday, the newest reading would sit after a day-long
+    // hole that is not missing data at all, only data this page has not
+    // fetched yet. They are kept, and join once the network snapshot lands.
+    const snapshot = base?.snapshot;
+    const fromNetwork = base?.source === 'network';
     const data = useMemo(() => {
         if (!snapshot) return null;
         const last = snapshot.readings[snapshot.readings.length - 1]?.recorded_at ?? '';
-        const newer = pushed.filter((r) => r.recorded_at > last);
+        const newer = fromNetwork ? pushed.filter((r) => r.recorded_at > last) : [];
         const cutoff = Date.now() - hours * 3600 * 1000;
         const readings = [...snapshot.readings, ...newer].filter(
             (r) => Date.parse(r.recorded_at) > cutoff,
         );
         return { ...snapshot, readings };
-    }, [snapshot, pushed, hours]);
+    }, [snapshot, fromNetwork, pushed, hours]);
 
-    return { data, devices, error, live, clockOffset };
+    const devices = base?.devices ?? [];
+
+    // Saved for the next visit, only ever from the network (see savedCopy.js).
+    // This runs again with every pushed reading, about once a minute.
+    useEffect(() => {
+        if (!fromNetwork || !data) return;
+        writeSaved(savedKey, { snapshot: data, devices, clockOffset });
+    }, [fromNetwork, data, devices, clockOffset, savedKey]);
+
+    // What is on screen, for the header: 'saved' until the network has
+    // answered, 'network' after. A failed refresh is `error` on top of either.
+    const source = base?.source ?? null;
+    const savedAt = base?.savedAt ?? null;
+
+    return { data, devices, error, live, clockOffset, source, savedAt };
 }

@@ -203,6 +203,16 @@ h1 {
 
 /* Every child shares one grid cell, so the cell is as wide as the widest
    sizer and the visible text never resizes the pill. See AGE_SIZERS. */
+/* Quieter than the age beside it: it says why the age may be old, and the
+   age is still the news. */
+.lastseen-status {
+    color: var(--text-muted);
+    font-size: 14px;
+    font-weight: 600;
+    padding-right: 10px;
+    border-right: 1px solid var(--border);
+}
+
 .lastseen-text {
     display: inline-grid;
 }

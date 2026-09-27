@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import History from './History.jsx';
 import { MONSTERA_CREDIT, monsteraLeaf } from './monstera.js';
 import PlantPhoto from './PlantPhoto.jsx';
+import { savedAtText } from './savedCopy.js';
 import Sparkline from './Sparkline.jsx';
 import useLive from './useLive.js';
 
@@ -112,7 +113,11 @@ const AGE_SIZERS = [119e3, (59 * 60 + 59) * 1e3, (99 * 60 + 59) * 60e3].map(ageT
 // second late, as a free-running interval would. The age is measured on the
 // server's clock (clockOffset, see useLive), because the reading's timestamp is
 // the server's: a browser a second out would otherwise count wrong, or below 0.
-function LastSeen({ latest, pending, unavailable, clockOffset }) {
+//
+// `status` is set while the age is not news about the node: over a saved copy
+// ("Refreshing") or after a refresh failed. The dot then goes grey, because
+// its colour claims the node is alive or not, and nobody knows that yet.
+function LastSeen({ latest, pending, unavailable, status, clockOffset }) {
     const recorded = latest ? Date.parse(latest.recorded_at) : null;
     const [now, setNow] = useState(() => Date.now());
 
@@ -146,9 +151,12 @@ function LastSeen({ latest, pending, unavailable, clockOffset }) {
                 className="dot"
                 style={{
                     background:
-                        age != null && !pending ? freshnessColor(age) : 'var(--text-muted)',
+                        age != null && !pending && !status
+                            ? freshnessColor(age)
+                            : 'var(--text-muted)',
                 }}
             />
+            {status ? <span className="lastseen-status">{status}</span> : null}
             <span className="lastseen-text">
                 {AGE_SIZERS.map((text, i) => (
                     <span key={i} className="lastseen-sizer" aria-hidden="true">
@@ -297,7 +305,10 @@ export default function App() {
     // Live on both pages: the history view has its own aggregates, but the
     // header's "Last reading 42 seconds ago" is about the node being alive,
     // which is just as worth knowing while looking backwards.
-    const { data, devices, error, clockOffset } = useLive('plant-01', LIVE_HOURS);
+    const { data, devices, error, clockOffset, source, savedAt } = useLive(
+        'plant-01',
+        LIVE_HOURS,
+    );
 
     // The watering note's "Watered 3 hours ago" has to move on between
     // readings, so it gets a clock rather than riding on the data. Coarse is
@@ -310,6 +321,20 @@ export default function App() {
     // The first fetch, when the page knows nothing and must not assert
     // anything - not "no readings", not "not calibrated".
     const pending = data == null && error == null;
+
+    // Says why the numbers on screen may be old. A failed refresh wins over
+    // "Refreshing", which would otherwise promise something that is not
+    // happening.
+    const status =
+        data == null
+            ? null
+            : error != null
+              ? navigator.onLine === false
+                  ? 'Offline'
+                  : 'Not updating'
+              : source === 'saved'
+                ? 'Refreshing'
+                : null;
 
     const readings = data?.readings ?? [];
     const latest = readings.length ? readings[readings.length - 1] : null;
@@ -358,6 +383,7 @@ export default function App() {
                     latest={latest}
                     pending={pending}
                     unavailable={error != null && data == null}
+                    status={status}
                     clockOffset={clockOffset}
                 />
             </header>
@@ -365,7 +391,14 @@ export default function App() {
             {error ? (
                 <div className="card" style={{ marginBottom: 16 }}>
                     <strong>Cannot reach the API.</strong>{' '}
-                    <span style={{ color: 'var(--text-muted)' }}>{error}</span>
+                    <span style={{ color: 'var(--text-muted)' }}>
+                        {error}.
+                        {data == null
+                            ? null
+                            : source === 'saved'
+                              ? ` Showing the copy saved on this device ${savedAtText(savedAt)}.`
+                              : ' Showing what was last fetched.'}
+                    </span>
                 </div>
             ) : null}
 

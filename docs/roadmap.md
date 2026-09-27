@@ -128,7 +128,17 @@ then **2.1–2.2**, then **3.1**.
   notification rather than twenty. Web Push through the service worker.
 - [ ] **8.3 Offline-first PWA.** `sw.js` caches nothing on purpose today. Show
   the last known state offline, clearly labelled as old, without ever passing
-  off stale data as live.
+  off stale data as live. *Plan:* keep the last data every view received
+  (the live snapshot plus whatever the socket appended, and each history
+  range) in the Cache API. On load, draw the saved copy at once, then fetch
+  and replace it: stale-while-revalidate for data. The header says "Updating…"
+  or "Offline" instead of "Live" while a saved copy is on screen, and the
+  error card says when it was saved. Refetch on the `online` event. Seed the
+  server clock offset from the saved copy. Skip a saved copy whose newest
+  reading has aged out of the window, since it would claim "nothing in 48
+  hours". *Hard part:* never writing a saved copy back as if it were fresh,
+  a saved copy that arrives after the network answer, and doing all this
+  without adding flicker (see 8.7).
 - [ ] **8.4 Time zones and DST.** Daily buckets in `/api/history` around a DST
   change, and when the viewer's zone differs from the plant's.
 - [ ] **8.5 Accessibility audit.** Screen-reader output for the charts, reduced
@@ -136,6 +146,20 @@ then **2.1–2.2**, then **3.1**.
 - [ ] **8.6 Watering events.** Log when the plant was watered (a button, or
   detected from a jump in soil moisture) and annotate the charts with it.
   *Hard part:* reliable change-point detection on a noisy sensor.
+- [ ] **8.7 A header that holds still.** "Last reading N seconds ago" jumps
+  every time the number gains a digit (9 → 10, 99 → 100): `tabular-nums`
+  makes digits equal width, but not the count of digits, so the pill resizes
+  and its neighbours shift. "Live" also flickers on page load, appearing and
+  disappearing while the first fetch and the socket settle. *Hard part:*
+  layout stability (reserve the width, or animate it) and not showing "Live"
+  until the socket state is actually known, without slowing the first paint.
+- [ ] **8.8 Load the photo and static assets instantly.** The Monstera photo
+  and the rest of the static shell load from the network on every visit.
+  Preload the right photo size, and cache the hashed static assets in `sw.js`
+  (cache-first is safe for files whose name changes with their content), while
+  sensor data stays network-only. A first step towards 8.3. *Hard part:* a
+  service worker that caches the shell but can never serve stale readings, and
+  that updates cleanly when a new build ships.
 
 ## 9. Product scope
 
@@ -156,3 +180,29 @@ then **2.1–2.2**, then **3.1**.
   its error rate with the other's, and roll back without a human.
 - [ ] **10.4 Firmware in the loop.** Run the real firmware in an emulator
   (Wokwi or QEMU) against the real stack in CI.
+
+## 11. Calibration and reading the numbers
+
+- [x] **11.1 Re-calibrate soil moisture.** On the current scale the plant only
+  needs water below about 5%, but the verdict in `App.jsx` says "Needs water"
+  below 20% and "Getting dry" below 40%, so it cries wolf. Re-take the
+  air/water points on the device row, or calibrate against the plant's own
+  dry and just-watered soil, and move the thresholds to match. *Hard part:*
+  where thresholds live (per device, next to `soil_raw_air`/`soil_raw_water`,
+  not hard-coded in the UI), and whether old readings are re-computed or keep
+  the calibration they were taken under.
+  *Done:* "Needs water" below 5%, "Getting dry" below 15%, and a watering is
+  now a rise of 30 points or more (real ones are 50–80), not 5. The values
+  live in `App.jsx`, which is right while there is one device (see 9.1).
+- [ ] **11.2 Air temperature reads 1–2 °C high.** The dashboard shows 23.9 °C
+  where the room is likely 22–23 °C. Probably self-heating: the AHT20 sits near
+  the ESP32 and its WiFi radio. Check against a reference thermometer, then fix
+  it physically (distance, sleep between readings) or with a stored offset.
+  *Hard part:* keeping the raw value alongside the corrected one, and knowing
+  whether the error is a constant offset or depends on duty cycle and ambient
+  temperature.
+- [ ] **11.3 Say whether the WiFi signal is good.** The RSSI tile shows a bare
+  dBm number. Annotate it in words, for example better than −60 good, −60 to
+  −70 fair, −70 to −80 weak, worse than −80 poor. *Hard part:* same as the
+  moisture verdict: words and an icon, not colour alone, and bands that don't
+  flicker when the value sits on a boundary.

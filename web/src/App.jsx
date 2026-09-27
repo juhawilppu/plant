@@ -25,17 +25,20 @@ const SERIES = {
 // Soil moisture is the only reading that implies an action, so it is the only
 // one given a verdict. Status colour never travels alone: each of these ships
 // with its own icon and its own words.
+//
+// The bands fit this plant on its current calibration: it is fine down to
+// about 5%, so anything higher crying for water is a false alarm.
 function verdictFor(pct) {
     if (pct == null)
         return { text: 'Not calibrated', color: 'var(--text-muted)', icon: 'info', advice: null };
-    if (pct < 20)
+    if (pct < 5)
         return {
             text: 'Needs water',
             color: 'var(--status-critical)',
             icon: 'alert',
             advice: 'Time for a drink.',
         };
-    if (pct < 40)
+    if (pct < 15)
         return {
             text: 'Getting dry',
             color: 'var(--status-warning)',
@@ -154,13 +157,15 @@ function LastSeen({ latest, pending, unavailable, live, clockOffset }) {
     );
 }
 
-// Soil moisture that climbs more than five points within five minutes is a
-// watering, not weather - nothing else moves the probe that fast. The rise is
+// Soil moisture that climbs more than thirty points within five minutes is a
+// watering, not weather or sensor noise. A real watering lifts the probe by
+// 50-80 points, so thirty catches every one of them with room to spare, while
+// the few-point wobbles the probe makes on its own never get near it. The rise is
 // measured across a window rather than between neighbouring samples, because at
 // one reading a minute a watering that soaks in over two minutes arrives as two
 // smaller steps. Only the most recent one is named, in words, in the hero note,
 // timed from the first reading of the rise.
-const WATERING_JUMP_PCT = 5;
+const WATERING_JUMP_PCT = 30;
 const WATERING_WINDOW_MS = 5 * 60 * 1000;
 
 function findWatering(readings) {

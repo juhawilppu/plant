@@ -79,7 +79,8 @@ function freshnessColor(ageMs) {
 }
 
 // A count shown to the second has to hold still while it ticks: tabular
-// figures keep 58, 59 and 60 the same width, so the pill does not twitch.
+// figures keep 58, 59 and 60 the same width. They cannot keep 9 and 10 the
+// same width, though, nor "second" and "seconds"; see AGE_SIZERS for that.
 const N = ({ children }) => <span className="lastseen-n">{children}</span>;
 
 // The age of the last reading, counting up until the next one resets it. To
@@ -96,13 +97,22 @@ function ageText(ms) {
     return <><N>{Math.floor(mins / 60)}</N> h <N>{mins % 60}</N> min ago</>;
 }
 
+// The widest thing each of ageText's forms can say. They are laid out,
+// invisible, in the same grid cell as the real text, so the pill is always as
+// wide as the widest of them and does not resize as the count gains a digit
+// (9 -> 10, 99 -> 100) or changes unit. The pill sits at the right end of the
+// header, so without this its left edge, and on a phone the line wrap, would
+// move every time. Past 99 hours it may still grow once; it holds still again
+// after that.
+const AGE_SIZERS = [119e3, (59 * 60 + 59) * 1e3, (99 * 60 + 59) * 60e3].map(ageText);
+
 // The header's answer to "is the node still alive?". It has a clock of its own,
 // so only this pill re-renders every second and not the sparklines, and that
 // clock wakes just as the age crosses each whole second rather than up to a
 // second late, as a free-running interval would. The age is measured on the
 // server's clock (clockOffset, see useLive), because the reading's timestamp is
 // the server's: a browser a second out would otherwise count wrong, or below 0.
-function LastSeen({ latest, pending, unavailable, live, clockOffset }) {
+function LastSeen({ latest, pending, unavailable, clockOffset }) {
     const recorded = latest ? Date.parse(latest.recorded_at) : null;
     const [now, setNow] = useState(() => Date.now());
 
@@ -139,20 +149,24 @@ function LastSeen({ latest, pending, unavailable, live, clockOffset }) {
                         age != null && !pending ? freshnessColor(age) : 'var(--text-muted)',
                 }}
             />
-            <span>
-                {pending ? (
-                    'Checking…'
-                ) : unavailable ? (
-                    'Unavailable'
-                ) : age != null ? (
-                    <>Last reading {ageText(age)}</>
-                ) : (
-                    'No readings yet'
-                )}
+            <span className="lastseen-text">
+                {AGE_SIZERS.map((text, i) => (
+                    <span key={i} className="lastseen-sizer" aria-hidden="true">
+                        Last reading {text}
+                    </span>
+                ))}
+                <span>
+                    {pending ? (
+                        'Checking…'
+                    ) : unavailable ? (
+                        'Unavailable'
+                    ) : age != null ? (
+                        <>Last reading {ageText(age)}</>
+                    ) : (
+                        'No readings yet'
+                    )}
+                </span>
             </span>
-            {/* Only while the socket is up: without it the page is polling,
-                which is still correct, just not instant. */}
-            {live && !pending ? <span className="lastseen-live">Live</span> : null}
         </div>
     );
 }
@@ -283,7 +297,7 @@ export default function App() {
     // Live on both pages: the history view has its own aggregates, but the
     // header's "Last reading 42 seconds ago" is about the node being alive,
     // which is just as worth knowing while looking backwards.
-    const { data, devices, error, live, clockOffset } = useLive('plant-01', LIVE_HOURS);
+    const { data, devices, error, clockOffset } = useLive('plant-01', LIVE_HOURS);
 
     // The watering note's "Watered 3 hours ago" has to move on between
     // readings, so it gets a clock rather than riding on the data. Coarse is
@@ -344,7 +358,6 @@ export default function App() {
                     latest={latest}
                     pending={pending}
                     unavailable={error != null && data == null}
-                    live={live}
                     clockOffset={clockOffset}
                 />
             </header>

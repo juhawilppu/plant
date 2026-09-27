@@ -146,13 +146,16 @@ then **2.1–2.2**, then **3.1**.
 - [ ] **8.6 Watering events.** Log when the plant was watered (a button, or
   detected from a jump in soil moisture) and annotate the charts with it.
   *Hard part:* reliable change-point detection on a noisy sensor.
-- [ ] **8.7 A header that holds still.** "Last reading N seconds ago" jumps
+- [x] **8.7 A header that holds still.** "Last reading N seconds ago" jumps
   every time the number gains a digit (9 → 10, 99 → 100): `tabular-nums`
   makes digits equal width, but not the count of digits, so the pill resizes
   and its neighbours shift. "Live" also flickers on page load, appearing and
   disappearing while the first fetch and the socket settle. *Hard part:*
   layout stability (reserve the width, or animate it) and not showing "Live"
   until the socket state is actually known, without slowing the first paint.
+  *Done:* "Live" is gone, since the dot already says the node is alive. The
+  pill reserves the width of the widest text it can show, by laying invisible
+  copies of it in the same grid cell, so it no longer resizes as it counts.
 - [ ] **8.8 Load the photo and static assets instantly.** The Monstera photo
   and the rest of the static shell load from the network on every visit.
   Preload the right photo size, and cache the hashed static assets in `sw.js`
@@ -160,6 +163,16 @@ then **2.1–2.2**, then **3.1**.
   sensor data stays network-only. A first step towards 8.3. *Hard part:* a
   service worker that caches the shell but can never serve stale readings, and
   that updates cleanly when a new build ships.
+- [ ] **8.9 Sparklines you can read.** The small charts on the live page are
+  confusing. Nothing on them says they cover the last 48 hours: the only
+  mention is a footer line far below them. They also show no values: hovering
+  or tapping a point does nothing, so there is no way to see what a bump was
+  or when it happened without going to the history page. Label the time range
+  on or next to the charts, and show the value and time of the point under
+  the pointer or finger. *Hard part:* touch has no hover, so it needs tap or
+  drag instead; the charts are `aria-hidden` today, so the new detail has to
+  reach screen readers too (see 8.5); and all this has to fit without turning
+  a small trend line into a cluttered chart.
 
 ## 9. Product scope
 

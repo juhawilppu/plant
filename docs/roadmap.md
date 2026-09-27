@@ -214,13 +214,17 @@ then **2.1–2.2**, then **3.1**.
   *Done:* "Needs water" below 5%, "Getting dry" below 15%, and a watering is
   now a rise of 30 points or more (real ones are 50–80), not 5. The values
   live in `App.jsx`, which is right while there is one device (see 9.1).
-- [ ] **11.2 Air temperature reads 1–2 °C high.** The dashboard shows 23.9 °C
+- [x] **11.2 Air temperature reads 1–2 °C high.** The dashboard shows 23.9 °C
   where the room is likely 22–23 °C. Probably self-heating: the AHT20 sits near
   the ESP32 and its WiFi radio. Check against a reference thermometer, then fix
   it physically (distance, sleep between readings) or with a stored offset.
   *Hard part:* keeping the raw value alongside the corrected one, and knowing
   whether the error is a constant offset or depends on duty cycle and ambient
   temperature.
+  *Done, nothing to fix:* against a reference thermometer the sensor read
+  23.6 °C where the reference read 24.0 °C, so it is 0.4 °C low, not high, and
+  within the AHT20's own ±0.3 °C tolerance plus the reference's. No offset is
+  stored and the raw value is what is shown.
 - [x] **11.3 Say whether the WiFi signal is good.** The RSSI tile shows a bare
   dBm number. Annotate it in words, for example better than −60 good, −60 to
   −70 fair, −70 to −80 weak, worse than −80 poor. *Hard part:* same as the
@@ -229,5 +233,4 @@ then **2.1–2.2**, then **3.1**.
   *Done, for temperature and humidity too* (`web/src/bands.js`): each tile
   has a word and an icon under its number. A band changes only once the value
   is clear of its edge by a margin (3 dB, 0.5 °C, 2 points), replayed over the
-  readings on screen so the same data always gives the same word. The
-  temperature bands do not yet allow for 11.2.
+  readings on screen so the same data always gives the same word.

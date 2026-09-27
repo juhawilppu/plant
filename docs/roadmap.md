@@ -221,8 +221,13 @@ then **2.1–2.2**, then **3.1**.
   *Hard part:* keeping the raw value alongside the corrected one, and knowing
   whether the error is a constant offset or depends on duty cycle and ambient
   temperature.
-- [ ] **11.3 Say whether the WiFi signal is good.** The RSSI tile shows a bare
+- [x] **11.3 Say whether the WiFi signal is good.** The RSSI tile shows a bare
   dBm number. Annotate it in words, for example better than −60 good, −60 to
   −70 fair, −70 to −80 weak, worse than −80 poor. *Hard part:* same as the
   moisture verdict: words and an icon, not colour alone, and bands that don't
   flicker when the value sits on a boundary.
+  *Done, for temperature and humidity too* (`web/src/bands.js`): each tile
+  has a word and an icon under its number. A band changes only once the value
+  is clear of its edge by a margin (3 dB, 0.5 °C, 2 points), replayed over the
+  readings on screen so the same data always gives the same word. The
+  temperature bands do not yet allow for 11.2.

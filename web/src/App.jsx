@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import History from './History.jsx';
+import { AIR_TEMP, HUMIDITY, RSSI, bandOf } from './bands.js';
 import { MONSTERA_CREDIT, monsteraLeaf } from './monstera.js';
 import PlantPhoto from './PlantPhoto.jsx';
 import { savedAtText } from './savedCopy.js';
@@ -270,7 +271,9 @@ function MonsteraMark() {
     );
 }
 
-function Tile({ label, color, value, unit, decimals = 1, points, pending }) {
+// `band` is the number in words (see bands.js). Its line is there even while
+// it is empty, so the tiles do not grow when the first data lands.
+function Tile({ label, color, value, unit, decimals = 1, points, band, pending }) {
     return (
         <div className="card">
             <div className="tile-label">
@@ -286,6 +289,14 @@ function Tile({ label, color, value, unit, decimals = 1, points, pending }) {
                         {value == null ? null : <span className="tile-unit">{unit}</span>}
                     </>
                 )}
+            </div>
+            <div className="tile-band">
+                {!pending && value != null && band ? (
+                    <>
+                        <Icon name={band.icon} color={band.color} size={16} />
+                        {band.text}
+                    </>
+                ) : null}
             </div>
             <div className="tile-spark">
                 {pending ? (
@@ -346,6 +357,15 @@ export default function App() {
             temp: readings.map((r) => ({ t: r.recorded_at, v: r.air_temp_c })),
             humidity: readings.map((r) => ({ t: r.recorded_at, v: r.humidity_pct })),
             rssi: readings.map((r) => ({ t: r.recorded_at, v: r.rssi })),
+        }),
+        [readings],
+    );
+
+    const bands = useMemo(
+        () => ({
+            temp: bandOf(AIR_TEMP, readings.map((r) => r.air_temp_c)),
+            humidity: bandOf(HUMIDITY, readings.map((r) => r.humidity_pct)),
+            rssi: bandOf(RSSI, readings.map((r) => r.rssi)),
         }),
         [readings],
     );
@@ -503,6 +523,7 @@ export default function App() {
                             value={latest?.air_temp_c ?? null}
                             unit="°C"
                             points={series.temp}
+                            band={bands.temp}
                             pending={pending}
                         />
                         <Tile
@@ -511,6 +532,7 @@ export default function App() {
                             value={latest?.humidity_pct ?? null}
                             unit="%"
                             points={series.humidity}
+                            band={bands.humidity}
                             pending={pending}
                         />
                         <Tile
@@ -520,6 +542,7 @@ export default function App() {
                             unit="dBm"
                             decimals={0}
                             points={series.rssi}
+                            band={bands.rssi}
                             pending={pending}
                         />
                     </div>

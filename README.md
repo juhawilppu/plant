@@ -46,6 +46,8 @@ flowchart TB
             b["server-b<br/>Express, WebSocket hub,<br/>MQTT bridge"]
         end
         postgres[("Postgres<br/>devices, readings")]
+        cdc["cdc<br/>replication slot reader"]
+        clickhouse[("ClickHouse<br/>copy of readings")]
     end
 
     node -- "MQTT over TLS, port 8883,<br/>straight to the box" --> mosquitto
@@ -56,6 +58,9 @@ flowchart TB
     caddy -- "round robin,<br/>health-checked" --> api
     monkey -. "kills one now and then,<br/>brings it back" .-> api
     api <-- "INSERT + NOTIFY,<br/>LISTEN for new rows" --> postgres
+    postgres -- "logical replication,<br/>inserts in commit order" --> cdc
+    cdc -- "batches, once a minute" --> clickhouse
+    api -- "/api/history buckets<br/>(Postgres if it cannot answer)" --> clickhouse
 
     classDef chaos stroke:#e5484d,stroke-width:2px,stroke-dasharray:5 3
     class monkey,checker chaos
@@ -78,6 +83,11 @@ flowchart TB
 5. The **chaos monkey**, when released, kills one instance at random every few
    minutes. The dashboards on that instance reconnect to the other one, and
    **`chaos/check.mjs`** proves nothing was missed.
+6. **`cdc`** reads every committed insert from a Postgres replication slot and
+   copies it to **ClickHouse** in batches, confirming its position to Postgres
+   only once ClickHouse has the rows. The long view's `/api/history` reads
+   ClickHouse, and falls back to Postgres when ClickHouse errors or takes more
+   than 3 seconds.
 
 ### One reading, from the pot to the screen
 
@@ -151,6 +161,8 @@ about a second, and the re-fetch covers anything stored while it was away.
 | `server/mqtt-bridge.js` | Subscribes to the broker and hands each reading to `ingest()` |
 | `server/feed.js` | The Postgres `LISTEN` that tells each instance about every new row |
 | `server/live.js` | The WebSocket hub on `/api/live` |
+| `server/cdc.js` | Streams new readings from Postgres's replication slot into ClickHouse, confirming each batch only once ClickHouse has it |
+| `clickhouse/` | ClickHouse's schema, and the config that fits it into 256 MB |
 | `db/schema.sql` | `devices`, one row per node with its soil calibration, and `readings`, an append-only log |
 | `web/` | The dashboard: Vite, React, hand-rolled SVG charts |
 | `caddy/Caddyfile` | TLS, and the load balancer in front of the two instances |
@@ -368,7 +380,7 @@ capacitive reading genuinely does not mean anything.
 ## The dashboard
 
 Two pages, and the split is the design. **Now** (`/`) answers "does the plant
-need anything?"; **the long view** (`#/history`) answers "what has been
+need anything?"; **the long view** (`/history`) answers "what has been
 happening?". Every measure appears exactly once on each, in the form that page
 needs - the same number never gets a tile *and* a chart on one screen.
 
@@ -377,7 +389,7 @@ needs - the same number never gets a tile *and* a chart on one screen.
   other page. 48 hours because that is the window where a reading still implies
   an action - long enough to show last night as well as this one.
 - **The long view** is 1 / 3 / 6 / 12 months or all time, bucketed server-side by
-  `GET /api/history`. A year is ~525k rows, so the server sends one average per
+  `GET /api/history`, from ClickHouse. A year is ~525k rows, so the server sends one average per
   bucket with that bucket's low and high, and the chart draws the average as the
   line and the spread as a band behind it.
 - **Buckets snap to whole days past a fortnight.** A sub-day bucket still

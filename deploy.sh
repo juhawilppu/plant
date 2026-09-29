@@ -1,8 +1,8 @@
 #!/bin/sh
 # Deploy to the plant server.
 #
-# The React bundle is built HERE, not there: the box has 961 MB and no swap, and
-# a vite build plus its node_modules is the one step likely to be OOM-killed on
+# The React bundle is built HERE, not there: the box has 961 MB and only a small
+# swapfile, and a vite build plus its node_modules is the one step likely to be OOM-killed on
 # it. Everything else builds fine in Docker on the server.
 #
 #   ./deploy.sh
@@ -64,11 +64,13 @@ fi"
 # The image is built before anything is restarted, so neither instance is down
 # while it builds. --remove-orphans clears out the single `server` container
 # from before there were two; that one deploy has a gap of about ten seconds.
+# cdc restarts on every deploy (it runs the API's image); it flushes and
+# confirms what it holds on SIGTERM, and resumes from the slot.
 echo "==> building, and bringing up everything but the API"
 ssh "$SERVER" "set -e
 cd $REMOTE
 docker compose --profile server build
-docker compose --profile server up -d --no-deps --remove-orphans --wait postgres mosquitto caddy"
+docker compose --profile server up -d --no-deps --remove-orphans --wait postgres mosquitto caddy clickhouse cdc"
 
 # One instance at a time, each waiting for its health check before the next
 # goes, so the other one is serving throughout: dashboards on the instance

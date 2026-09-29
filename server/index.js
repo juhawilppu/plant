@@ -15,6 +15,7 @@ import { dirname, join } from 'node:path';
 import { startMqttBridge } from './mqtt-bridge.js';
 import { startLiveHub } from './live.js';
 import { CHANNEL, listenForReadings } from './feed.js';
+import { clickhouseRows } from './clickhouse.js';
 
 const PORT = process.env.PORT || 8090;
 
@@ -341,42 +342,26 @@ function bucketFor(spanSeconds) {
     );
 }
 
-app.get('/api/history', route(async (req, res) => {
-    const device = req.query.device || 'plant-01';
-    const range = String(req.query.range ?? '3m');
-    // Own keys only: `in` would also accept inherited names like 'toString'.
-    if (!Object.hasOwn(HISTORY_RANGES, range)) {
-        return res.status(400).json({ error: `unknown range: ${range}` });
-    }
+// The history is read from ClickHouse, which cdc.js keeps as a copy of the
+// readings, and from Postgres only when ClickHouse cannot answer in time: the
+// long view then still works, just from the store that has to do more work
+// for it. Without CLICKHOUSE_URL (a laptop) it is Postgres only.
+//
+// Both return the first reading ever and the buckets from `from` on, in the
+// same shape. Each bucket is the readings whose time, as seconds since 1970,
+// floors to the same multiple of bucketSeconds - identical arithmetic in both
+// stores, so switching between them never shifts a bucket's edge.
+const CLICKHOUSE_TIMEOUT_MS = 3000;
 
-    const dev = await pool.query(
-        'select soil_raw_air, soil_raw_water from devices where device_id = $1',
-        [device],
-    );
-    if (dev.rowCount === 0) return res.status(404).json({ error: 'unknown device' });
-    const { soil_raw_air, soil_raw_water } = dev.rows[0];
-
-    // "All time" cannot pick a bucket until it knows how far back the history
-    // actually goes, so the bounds are fetched first. The fixed ranges want the
-    // same row anyway, to tell the dashboard when recording started.
-    const bounds = await pool.query(
+async function firstReadingPostgres(device) {
+    const { rows } = await pool.query(
         'select min(recorded_at) as first from readings where device_id = $1',
         [device],
     );
-    const firstReading = bounds.rows[0].first;
+    return rows[0].first;
+}
 
-    const to = new Date();
-    const days = HISTORY_RANGES[range];
-    const from =
-        range === 'all'
-            ? (firstReading ?? to)
-            : new Date(to.getTime() - days * 86400 * 1000);
-
-    // A brand-new device has no span at all; one bucket's worth keeps the
-    // ladder from dividing by zero.
-    const spanSeconds = Math.max(300, (to.getTime() - new Date(from).getTime()) / 1000);
-    const bucketSeconds = bucketFor(spanSeconds);
-
+async function bucketsPostgres(device, from, bucketSeconds) {
     const { rows } = await pool.query(
         `select to_timestamp(floor(extract(epoch from recorded_at) / $3) * $3) as t,
                 count(*)::int                as n,
@@ -399,10 +384,107 @@ app.get('/api/history', route(async (req, res) => {
           order by 1`,
         [device, from, bucketSeconds],
     );
+    return rows;
+}
+
+async function firstReadingClickhouse(device) {
+    // minOrNull: a plain min() over no rows is 1970, not null. No FINAL here,
+    // since a duplicate cannot move a minimum.
+    const [row] = await clickhouseRows(
+        'select minOrNull(recorded_at) as first from readings where device_id = {device:String}',
+        { params: { device }, timeoutMs: CLICKHOUSE_TIMEOUT_MS },
+    );
+    return row.first && new Date(row.first);
+}
+
+async function bucketsClickhouse(device, from, bucketSeconds) {
+    // FINAL, because the CDC is at-least-once and ReplacingMergeTree drops a
+    // duplicate only when it gets round to merging: without it a replayed row
+    // would count twice in n and pull on the average until then.
+    const rows = await clickhouseRows(
+        `select toDateTime(intDiv(toUnixTimestamp(recorded_at), {bucket:UInt32}) * {bucket:UInt32}, 'UTC') as t,
+                toUInt32(count())  as n,
+                avg(soil_raw)      as soil_raw_avg,
+                min(soil_raw)      as soil_raw_min,
+                max(soil_raw)      as soil_raw_max,
+                avg(air_temp_c)    as air_temp_c_avg,
+                min(air_temp_c)    as air_temp_c_min,
+                max(air_temp_c)    as air_temp_c_max,
+                avg(humidity_pct)  as humidity_pct_avg,
+                min(humidity_pct)  as humidity_pct_min,
+                max(humidity_pct)  as humidity_pct_max,
+                avg(lux)           as lux_avg,
+                min(lux)           as lux_min,
+                max(lux)           as lux_max
+           from readings final
+          where device_id = {device:String}
+            and recorded_at >= fromUnixTimestamp64Milli({from:Int64}, 'UTC')
+          group by t
+          order by t`,
+        {
+            params: { device, bucket: bucketSeconds, from: new Date(from).getTime() },
+            timeoutMs: CLICKHOUSE_TIMEOUT_MS,
+        },
+    );
+    return rows.map((r) => ({ ...r, t: new Date(r.t) }));
+}
+
+const historyStores = [
+    ...(process.env.CLICKHOUSE_URL
+        ? [{ name: 'clickhouse', first: firstReadingClickhouse, buckets: bucketsClickhouse }]
+        : []),
+    { name: 'postgres', first: firstReadingPostgres, buckets: bucketsPostgres },
+];
+
+app.get('/api/history', route(async (req, res) => {
+    const device = req.query.device || 'plant-01';
+    const range = String(req.query.range ?? '3m');
+    // Own keys only: `in` would also accept inherited names like 'toString'.
+    if (!Object.hasOwn(HISTORY_RANGES, range)) {
+        return res.status(400).json({ error: `unknown range: ${range}` });
+    }
+
+    const dev = await pool.query(
+        'select soil_raw_air, soil_raw_water from devices where device_id = $1',
+        [device],
+    );
+    if (dev.rowCount === 0) return res.status(404).json({ error: 'unknown device' });
+    const { soil_raw_air, soil_raw_water } = dev.rows[0];
+
+    // "All time" cannot pick a bucket until it knows how far back the history
+    // actually goes, so the bounds are fetched first. The fixed ranges want the
+    // same row anyway, to tell the dashboard when recording started.
+    let result;
+    for (const [i, store] of historyStores.entries()) {
+        try {
+            const firstReading = await store.first(device);
+            const to = new Date();
+            const days = HISTORY_RANGES[range];
+            const from =
+                range === 'all'
+                    ? (firstReading ?? to)
+                    : new Date(to.getTime() - days * 86400 * 1000);
+
+            // A brand-new device has no span at all; one bucket's worth keeps
+            // the ladder from dividing by zero.
+            const spanSeconds = Math.max(300, (to.getTime() - new Date(from).getTime()) / 1000);
+            const bucketSeconds = bucketFor(spanSeconds);
+            const rows = await store.buckets(device, from, bucketSeconds);
+            result = { source: store.name, firstReading, from, to, bucketSeconds, rows };
+            break;
+        } catch (err) {
+            if (i === historyStores.length - 1) throw err;
+            console.error(`history: ${store.name} failed, trying the next store:`, err.message);
+        }
+    }
+    const { source, firstReading, from, to, bucketSeconds, rows } = result;
 
     res.json({
         device,
         range,
+        // Which store answered. ClickHouse trails Postgres by up to a minute
+        // (cdc.js batches), which the newest bucket can show.
+        source,
         bucketSeconds,
         from,
         to,

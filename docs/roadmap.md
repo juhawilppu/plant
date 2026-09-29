@@ -83,6 +83,43 @@ then **2.1–2.2**, then **3.1**.
 - [ ] **4.3 Time-series storage.** A year is about 525k rows per device.
   Partitioning, retention, continuous rollups (TimescaleDB or hand-rolled), and
   keeping `/api/history` fast as the data grows.
+- [ ] **4.4 A separate analytics store.** Serve the "All time" view from
+  ClickHouse, fed from Postgres by CDC (logical replication) or by the bridge
+  writing to both, while the live view stays on Postgres. Do 4.3 in plain
+  Postgres first, so there is a baseline to compare against. Speed is not the
+  reason: Postgres already buckets a year in milliseconds. *Hard part:* two
+  stores that must agree. That means deciding what happens when one write
+  lands and the other doesn't; accepting that `ReplacingMergeTree` dedups
+  `msg_id` only when parts merge, so duplicates stay visible until then
+  (unless you pay for `FINAL`); building rollups (`AggregatingMergeTree`)
+  that stay correct when a replayed hour arrives late (1.4); showing
+  honestly in the UI (8.1) that the two views disagree about the last few
+  minutes; and backfilling or rebuilding a rollup without downtime. All of it
+  runs on the same 961 MB box, with no added memory: ClickHouse expects a
+  gigabyte or more to itself, so making it fit beside everything else
+  (memory limits, smaller caches, turning off its system log tables) is part
+  of the work, and so is what fails first when it doesn't fit (2.4).
+  *Partly done:* the pipeline runs, but nothing reads from it yet.
+  `server/cdc.js` reads a pgoutput replication slot and confirms a batch only
+  after ClickHouse has stored it. It copies the history that predates the
+  slot (from after the slot exists, so the copy overlaps the stream instead
+  of leaving a gap) and starts over if Postgres drops the slot at the 1 GB
+  WAL cap. Tested locally: `kill -9` with rows held (replayed), ClickHouse
+  down (rows wait), and an interrupted copy (duplicates until merge, `FINAL`
+  exact). ClickHouse idles at about 85 MB on the server under a 256 MB
+  limit. With the default 80% ceiling, its first boot failed on its own
+  memory limit, so the ceiling is 90%. The replication library's keepalive
+  confirms the newest position *received*, which would drop unstored rows
+  after a crash, so it is turned off in favour of our own. `/api/history`
+  now reads ClickHouse (`FINAL`, so a replayed row never counts twice) and
+  falls back to Postgres when ClickHouse errors or takes over 3 s. The
+  response says which store answered (`source`). Locally both stores give
+  identical buckets for every range, even with every row duplicated. Left
+  open: rollups (materialized views) instead of `FINAL` over raw rows; a
+  circuit breaker, since while ClickHouse hangs every request waits out the
+  3 s first; showing on the page when the answer came from the fallback or
+  trails the live view; a check that the two stores agree; and a
+  least-privilege replication role instead of the `postgres` superuser (6.x).
 
 ## 5. Data lifecycle
 

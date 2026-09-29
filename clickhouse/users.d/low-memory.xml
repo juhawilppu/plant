@@ -1,0 +1,14 @@
+<!--
+Per-query limits, for every user. The server-wide ceiling is in
+config.d/low-memory.xml; this one stops a single query from taking all of it.
+-->
+<clickhouse>
+    <profiles>
+        <default>
+            <max_threads>1</max_threads>
+            <max_memory_usage>64000000</max_memory_usage>
+            <max_block_size>8192</max_block_size>
+            <log_queries>0</log_queries>
+        </default>
+    </profiles>
+</clickhouse>

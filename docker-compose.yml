@@ -7,6 +7,8 @@
 #   server-a   the ingest + read API, with the MQTT->Postgres bridge inside it,
 #   server-b   twice, so either can die without a dashboard noticing
 #              (optional locally - see the `server` profile)
+#   clickhouse a copy of the readings for the long-range views (roadmap 4.4)
+#   cdc        streams new readings from Postgres's replication log into it
 #   chaos      kills one of the two at random, to prove that claim (opt-in -
 #              see the `chaos` profile and the README)
 #
@@ -30,6 +32,11 @@ x-server: &server
     MQTT_URL: mqtt://mosquitto:1883
     MQTT_USERNAME: bridge
     MQTT_PASSWORD: ${MQTT_BRIDGE_PASSWORD}
+    # The history endpoint reads from here, and falls back to Postgres when it
+    # cannot, so this is deliberately not in depends_on.
+    CLICKHOUSE_URL: http://clickhouse:8123
+    CLICKHOUSE_USER: plant
+    CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-plant}
   volumes:
     # The dashboard is built on the developer's machine and rsynced, so it is
     # mounted rather than baked into the image: a UI change needs a sync and a
@@ -61,6 +68,11 @@ services:
     image: postgres:16-alpine
     container_name: plant-vitals-postgres
     restart: unless-stopped
+    # Logical decoding, for the cdc service's replication slot. A slot makes
+    # Postgres keep every WAL segment its consumer has not confirmed, so a dead
+    # consumer would fill the disk; past this cap Postgres gives up on the slot
+    # instead, and cdc.js starts over with a full copy. The disk has ~19 GB free.
+    command: ['postgres', '-c', 'wal_level=logical', '-c', 'max_slot_wal_keep_size=1GB']
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
@@ -94,7 +106,7 @@ services:
       - ./mosquitto/config:/mosquitto/config
       - ./mosquitto/certs:/mosquitto/certs:ro
       - plant-vitals-mqttdata:/mosquitto/data
-    # A 1 GB box with no swap: cap the broker so a runaway client cannot starve
+    # A 1 GB box with only a small swapfile: cap the broker so a runaway client cannot starve
     # Postgres. Mosquitto idles at a few MB, so this is generous.
     mem_limit: 96m
 
@@ -119,6 +131,61 @@ services:
       INSTANCE: b
     ports:
       - '127.0.0.1:${WEB_PORT_B:-8091}:8090'
+
+  # A second store for the long-range views, fed by cdc below. It has to fit on
+  # the same 961 MB box as everything else, and no more memory is coming:
+  # clickhouse/config.d holds what that costs.
+  clickhouse:
+    profiles: ['server']
+    image: clickhouse/clickhouse-server:26.8-alpine
+    container_name: plant-vitals-clickhouse
+    restart: unless-stopped
+    environment:
+      CLICKHOUSE_DB: plant_vitals
+      # Replaces the passwordless `default` user, which would otherwise be open
+      # to every container on the compose network.
+      CLICKHOUSE_USER: plant
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-plant}
+    ports:
+      # Loopback only, for a person on the box: curl localhost:58123.
+      - '127.0.0.1:58123:8123'
+    volumes:
+      - plant-vitals-chdata:/var/lib/clickhouse
+      - ./clickhouse/config.d/low-memory.xml:/etc/clickhouse-server/config.d/low-memory.xml:ro
+      - ./clickhouse/users.d/low-memory.xml:/etc/clickhouse-server/users.d/low-memory.xml:ro
+      # Applied only when the data volume is empty, like db/schema.sql.
+      - ./clickhouse/init:/docker-entrypoint-initdb.d:ro
+    ulimits:
+      nofile: { soft: 262144, hard: 262144 }
+    # The budget, not a guess at usage: ClickHouse sizes its own ceiling from
+    # this (max_server_memory_usage_to_ram_ratio) and fails queries past it.
+    mem_limit: 256m
+    healthcheck:
+      test: ['CMD', 'wget', '-q', '-O', '/dev/null', 'http://127.0.0.1:8123/ping']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 20s
+
+  # Postgres -> ClickHouse. One instance: a replication slot takes one consumer
+  # at a time. It runs the API's image, built by server-a/server-b's `build`.
+  cdc:
+    profiles: ['server']
+    image: plant-vitals-server
+    container_name: plant-vitals-cdc
+    restart: unless-stopped
+    command: ['node', 'cdc.js']
+    environment:
+      DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD:-postgres}@postgres:5432/plant_vitals
+      CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_USER: plant
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-plant}
+    mem_limit: 96m
+    depends_on:
+      postgres:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
 
   caddy:
     image: caddy:2-alpine
@@ -176,3 +243,4 @@ volumes:
   plant-vitals-mqttdata:
   plant-vitals-caddydata:
   plant-vitals-caddyconfig:
+  plant-vitals-chdata:

@@ -1,0 +1,99 @@
+<!--
+ClickHouse on a 961 MB box it shares with Postgres, two API instances, the
+broker and Caddy. The defaults are sized for a server with tens of gigabytes:
+big caches, hundreds of background threads, and a dozen system tables that log
+the server's own activity into MergeTree tables, and so keep merging, forever.
+Each setting below trades throughput this data will never need for memory.
+
+The ceiling itself is the container's mem_limit (docker-compose.yml).
+ClickHouse reads its cgroup limit, so the ratio below is a fraction of that,
+not of the host's RAM. Past it, queries fail with MEMORY_LIMIT_EXCEEDED rather
+than the kernel's OOM killer choosing something to end.
+-->
+<clickhouse>
+    <logger>
+        <level>warning</level>
+        <!-- Docker keeps the console; files would only fill the disk. -->
+        <log remove="1"/>
+        <errorlog remove="1"/>
+        <console>1</console>
+    </logger>
+
+    <!-- IPv4 only (Docker's network has no IPv6 here), and only the HTTP
+         interface cdc.js uses plus the native one clickhouse-client uses. -->
+    <listen_host>0.0.0.0</listen_host>
+    <mysql_port remove="1"/>
+    <postgresql_port remove="1"/>
+    <interserver_http_port remove="1"/>
+
+    <max_server_memory_usage_to_ram_ratio>0.9</max_server_memory_usage_to_ram_ratio>
+
+    <!-- A year of one device is a few megabytes; these caches are gigabytes by default. -->
+    <mark_cache_size>16777216</mark_cache_size>
+    <index_mark_cache_size>0</index_mark_cache_size>
+    <uncompressed_cache_size>0</uncompressed_cache_size>
+    <index_uncompressed_cache_size>0</index_uncompressed_cache_size>
+    <mmap_cache_size>64</mmap_cache_size>
+    <compiled_expression_cache_size>0</compiled_expression_cache_size>
+
+    <max_thread_pool_size>256</max_thread_pool_size>
+    <max_thread_pool_free_size>8</max_thread_pool_free_size>
+    <max_io_thread_pool_size>4</max_io_thread_pool_size>
+    <max_io_thread_pool_free_size>0</max_io_thread_pool_free_size>
+
+    <max_concurrent_queries>8</max_concurrent_queries>
+    <max_connections>64</max_connections>
+
+    <!-- One core. Two merges at a time is plenty for one row a minute. -->
+    <background_pool_size>2</background_pool_size>
+    <background_merges_mutations_concurrency_ratio>2</background_merges_mutations_concurrency_ratio>
+    <background_schedule_pool_size>8</background_schedule_pool_size>
+    <background_streaming_schedule_pool_size>1</background_streaming_schedule_pool_size>
+    <background_common_pool_size>2</background_common_pool_size>
+    <background_move_pool_size>1</background_move_pool_size>
+    <background_fetches_pool_size>1</background_fetches_pool_size>
+    <background_buffer_flush_schedule_pool_size>1</background_buffer_flush_schedule_pool_size>
+    <background_message_broker_schedule_pool_size>1</background_message_broker_schedule_pool_size>
+    <background_distributed_schedule_pool_size>1</background_distributed_schedule_pool_size>
+
+    <merge_tree>
+        <!-- These default to 8 and 20 and must fit inside the pool above
+             (2 x 2 = 4 slots), or MergeTree tables refuse to be created. -->
+        <number_of_free_entries_in_pool_to_lower_max_size_of_merge>2</number_of_free_entries_in_pool_to_lower_max_size_of_merge>
+        <number_of_free_entries_in_pool_to_execute_mutation>2</number_of_free_entries_in_pool_to_execute_mutation>
+        <number_of_free_entries_in_pool_to_execute_optimize_entire_partition>2</number_of_free_entries_in_pool_to_execute_optimize_entire_partition>
+        <!-- Smaller blocks while merging: slower merges, smaller peaks. -->
+        <merge_max_block_size>1024</merge_max_block_size>
+    </merge_tree>
+
+    <asynchronous_metrics_update_period_s>60</asynchronous_metrics_update_period_s>
+
+    <!-- The server's own activity logs. Each is a MergeTree table written every
+         few seconds, which on this box would cost more than the plant's data. -->
+    <query_log remove="1"/>
+    <query_thread_log remove="1"/>
+    <query_views_log remove="1"/>
+    <query_metric_log remove="1"/>
+    <part_log remove="1"/>
+    <trace_log remove="1"/>
+    <text_log remove="1"/>
+    <metric_log remove="1"/>
+    <latency_log remove="1"/>
+    <error_log remove="1"/>
+    <asynchronous_metric_log remove="1"/>
+    <processors_profile_log remove="1"/>
+    <opentelemetry_span_log remove="1"/>
+    <session_log remove="1"/>
+    <asynchronous_insert_log remove="1"/>
+    <backup_log remove="1"/>
+    <blob_storage_log remove="1"/>
+    <s3queue_log remove="1"/>
+    <filesystem_cache_log remove="1"/>
+    <zookeeper_log remove="1"/>
+    <aggregated_zookeeper_log remove="1"/>
+    <zookeeper_connection_log remove="1"/>
+    <background_schedule_pool_log remove="1"/>
+    <delta_lake_metadata_log remove="1"/>
+    <iceberg_metadata_log remove="1"/>
+    <instrumentation_trace_log remove="1"/>
+</clickhouse>

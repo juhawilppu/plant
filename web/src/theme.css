@@ -404,8 +404,12 @@ h1 {
 
 .hero-spark {
     margin-top: 18px;
-    /* Low enough that it stays a texture under the meter rather than competing
-       with the display-size number above it. */
+}
+
+/* Low enough that it stays a texture under the meter rather than competing
+   with the display-size number above it. The line only: the readout it opens
+   has to be as solid as any other. */
+.hero-spark svg {
     opacity: 0.85;
 }
 
@@ -467,6 +471,68 @@ h1 {
 
 .tile-spark {
     margin-top: 10px;
+}
+
+/* --- chart readout: what the point under the pointer is, and when ---
+   Shared by the history charts and the live page's sparklines. The value
+   leads, the time follows, and the series is keyed by a short stroke of its
+   colour. */
+.chart-readout {
+    position: absolute;
+    z-index: 2;
+    pointer-events: none;
+    background: var(--surface-1);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 11px 14px;
+    box-shadow: var(--shadow);
+    min-width: 140px;
+    max-width: 17em;
+}
+
+.chart-readout-value {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 20px;
+    font-weight: 800;
+    color: var(--text-primary);
+}
+
+.chart-readout-key {
+    width: 14px;
+    height: 3px;
+    border-radius: 2px;
+    flex: none;
+}
+
+.chart-readout-unit {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--text-muted);
+}
+
+.chart-readout-band {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    margin-top: 2px;
+}
+
+.chart-readout-time {
+    font-size: 14px;
+    color: var(--text-secondary);
+    margin-top: 3px;
+    font-variant-numeric: tabular-nums;
+}
+
+/* A sparkline's readout opens above the line, over the tile's number, so the
+   finger that asked for it does not cover it. */
+.spark-readout {
+    bottom: calc(100% + 8px);
+    white-space: nowrap;
+    max-width: none;
+    padding: 9px 12px;
 }
 
 /* Identity comes from a colored key beside the text, never from coloring the
@@ -569,6 +635,84 @@ h1 {
     color: var(--accent-fg);
     font-weight: 700;
     box-shadow: none;
+}
+
+/* --- a range of your own: two dates, or a stretch dragged out on a chart --- */
+.custom-range {
+    display: flex;
+    align-items: flex-end;
+    flex-wrap: wrap;
+    gap: 10px 14px;
+    margin-bottom: 18px;
+}
+
+.custom-range label {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    color: var(--text-secondary);
+    font-size: 15px;
+    font-weight: 600;
+}
+
+.custom-range input {
+    font: inherit;
+    font-size: 16px;
+    color: var(--text-primary);
+    background: var(--surface-1);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 10px 12px;
+    min-height: 48px;
+}
+
+.custom-range button,
+.zoom-bar button {
+    font: inherit;
+    font-size: 17px;
+    font-weight: 700;
+    padding: 13px 22px;
+    border-radius: 999px;
+    border: none;
+    background: var(--surface-1);
+    color: var(--text-secondary);
+    box-shadow: var(--shadow);
+    cursor: pointer;
+}
+
+.custom-range button:disabled {
+    cursor: default;
+    opacity: 0.5;
+}
+
+.custom-range-error {
+    flex-basis: 100%;
+    color: var(--status-critical);
+    font-size: 15px;
+    font-weight: 600;
+}
+
+/* Says what is on screen when it is not one of the preset ranges, and how to
+   get back out. */
+.zoom-bar {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 10px 14px;
+    margin-bottom: 18px;
+    font-size: 17px;
+    font-weight: 700;
+}
+
+.zoom-bar-range {
+    font-variant-numeric: tabular-nums;
+}
+
+/* Only a mouse or a pen can drag out a range on a chart; a finger scrubs. */
+@media (hover: none) {
+    .hint-pointer {
+        display: none;
+    }
 }
 
 .spacer {

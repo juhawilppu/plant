@@ -21,18 +21,34 @@ export default function useWidth(initial, min) {
     return [ref, width];
 }
 
+// A chart readout opened by a tap stays up after the finger lifts, until a tap
+// lands somewhere else on the page: on touch, lifting the finger is also
+// leaving the chart, and the readout would vanish before it could be read.
+export function useTapAway(ref, active, clear) {
+    useEffect(() => {
+        if (!active) return undefined;
+        const onDown = (e) => {
+            if (ref.current && !ref.current.contains(e.target)) clear();
+        };
+        document.addEventListener('pointerdown', onDown);
+        return () => document.removeEventListener('pointerdown', onDown);
+    }, [ref, active, clear]);
+}
+
 // Points sit across the plot by their time, not by their place in the list, so
 // an outage keeps its real width instead of closing up as if it never happened.
 // `x(i)` places point i; `indexAt(px)` is the point nearest a pixel column, for
-// the crosshair.
+// the crosshair; `timeAt(px)` is the time under a pixel column, for dragging
+// out a range to zoom into.
 export function timeScale(points, left, width) {
     const ms = points.map((p) => Date.parse(p.t));
     const t0 = ms[0];
     const span = ms.length > 1 ? ms[ms.length - 1] - t0 : 0;
     const x = (i) => left + (span > 0 ? ((ms[i] - t0) / span) * width : width / 2);
+    const timeAt = (px) => t0 + ((px - left) / width) * span;
     const indexAt = (px) => {
         if (!ms.length) return null;
-        const t = t0 + ((px - left) / width) * span;
+        const t = timeAt(px);
         let lo = 0;
         let hi = ms.length - 1;
         while (lo < hi) {
@@ -42,7 +58,7 @@ export function timeScale(points, left, width) {
         }
         return lo > 0 && t - ms[lo - 1] < ms[lo] - t ? lo - 1 : lo;
     };
-    return { x, indexAt };
+    return { x, indexAt, timeAt };
 }
 
 // True when point i starts a new run: more than `maxGapMs` passed since the

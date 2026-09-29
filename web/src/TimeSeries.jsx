@@ -1,5 +1,6 @@
 import React, { useCallback, useMemo, useState } from 'react';
-import useWidth, { gapBefore, linePath, segmentsOf, timeScale } from './useWidth.js';
+import useWidth, { gapBefore, linePath, segmentsOf, timeScale, useTapAway } from './useWidth.js';
+import { bucketSpan, exactTime } from './when.js';
 
 // One measure over time, hand-rolled in SVG rather than pulled from a chart
 // library: the mark specs here (2.6px line, >=10px end dot with a surface ring,
@@ -36,10 +37,20 @@ function niceScale(min, max, count = 4) {
     return { lo, hi, ticks };
 }
 
+// A drag narrower than this is a click that wobbled, not a range.
+const MIN_DRAG_PX = 8;
+
 function formatTime(iso, spanHours) {
     const d = new Date(iso);
-    if (spanHours <= 48) {
-        return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    // Zoomed in to hours or days, the two ends can fall on different days, so
+    // the axis names the day as well as the time.
+    if (spanHours <= 24 * 14) {
+        return d.toLocaleString([], {
+            day: 'numeric',
+            month: 'short',
+            hour: '2-digit',
+            minute: '2-digit',
+        });
     }
     // Past a few months the day of the month stops carrying information and the
     // year starts to, so the label widens rather than repeating "3 Mar".
@@ -61,10 +72,15 @@ export default function TimeSeries({
     bandLabel = 'low to high', // what lo/hi mean, for the tooltip and the label
     pending = false, // first fetch still in flight: no data, and no claim either
     maxGapMs = Infinity, // neighbours further apart than this have missing data between them
+    bucketSeconds = null, // each point averages this long from its `t`; null for single readings
+    onZoom = null, // (fromMs, toMs) => void; when set, dragging across the chart picks a range
     className = '',
 }) {
     const [hostRef, width] = useWidth(640, 260);
     const [cursor, setCursor] = useState(null); // index into points
+    const [drag, setDrag] = useState(null); // { from, to } in svg pixels, while a range is dragged out
+    const clearCursor = useCallback(() => setCursor(null), []);
+    useTapAway(hostRef, cursor != null, clearCursor);
 
     const withValues = useMemo(() => points.filter((p) => p.v != null), [points]);
 
@@ -86,7 +102,10 @@ export default function TimeSeries({
     const plotW = Math.max(10, width - PAD.left - PAD.right);
     const plotH = height - PAD.top - PAD.bottom;
 
-    const { x, indexAt } = useMemo(() => timeScale(points, PAD.left, plotW), [points, plotW]);
+    const { x, indexAt, timeAt } = useMemo(
+        () => timeScale(points, PAD.left, plotW),
+        [points, plotW],
+    );
     const y = useCallback(
         (v) => PAD.top + plotH - ((v - lo) / (hi - lo || 1)) * plotH,
         [lo, hi, plotH],
@@ -137,12 +156,38 @@ export default function TimeSeries({
     const fmt = (v) => (v == null ? '—' : v.toFixed(decimals));
     const washId = `wash-${title.replace(/\W/g, '')}`;
 
-    const onPointer = (e) => {
+    const svgX = (e) => {
         const rect = e.currentTarget.getBoundingClientRect();
-        const px = ((e.clientX - rect.left) / rect.width) * width;
-        // The crosshair snaps to the nearest data position, so the reader aims
-        // at a time rather than at a 2px line.
+        return ((e.clientX - rect.left) / rect.width) * width;
+    };
+    const inPlot = (px) => Math.max(PAD.left, Math.min(PAD.left + plotW, px));
+
+    // The crosshair snaps to the nearest data position, so the reader aims at a
+    // time rather than at a 2px line. With a mouse, pressing and dragging also
+    // marks out a range to zoom into. A finger dragging sideways keeps reading
+    // values instead, which is what it expects to do; on a phone the range is
+    // picked with the date fields above the charts.
+    const onPointerDown = (e) => {
+        const px = svgX(e);
         setCursor(indexAt(px));
+        if (onZoom && e.pointerType !== 'touch' && e.button === 0) {
+            e.currentTarget.setPointerCapture(e.pointerId);
+            setDrag({ from: inPlot(px), to: inPlot(px) });
+        }
+    };
+
+    const onPointerMove = (e) => {
+        const px = svgX(e);
+        setCursor(indexAt(px));
+        if (drag) setDrag({ ...drag, to: inPlot(px) });
+    };
+
+    const onPointerUp = () => {
+        if (!drag) return;
+        const a = Math.min(drag.from, drag.to);
+        const b = Math.max(drag.from, drag.to);
+        setDrag(null);
+        if (b - a >= MIN_DRAG_PX) onZoom(timeAt(a), timeAt(b));
     };
 
     const onKeyDown = (e) => {
@@ -156,11 +201,31 @@ export default function TimeSeries({
             });
         } else if (e.key === 'Escape') {
             setCursor(null);
+            setDrag(null);
         }
     };
 
-    const cur = cursor != null ? points[cursor] : null;
-    const curX = cursor != null ? x(cursor) : 0;
+    // A refetch can bring fewer points than the cursor was pointing into.
+    const cur = cursor != null && cursor < points.length ? points[cursor] : null;
+    const curX = cur ? x(cursor) : 0;
+
+    // The two ends of the axis, as long as they fit side by side. A zoom to a
+    // day or two names the time as well as the date, and on a narrow card that
+    // pair can run into each other, so it falls back to whichever half still
+    // tells the ends apart: the time within one day, the date across several.
+    // The readout still has the exact time. About 8.5px a character at 15px.
+    const axisEnds = useMemo(() => {
+        if (!points.length) return ['', ''];
+        const ends = [points[0].t, points[points.length - 1].t].map((t) => new Date(t));
+        const fits = ([a, b]) => (a.length + b.length) * 8.5 + 24 <= plotW;
+        const full = ends.map((d) => formatTime(d, spanHours));
+        if (fits(full)) return full;
+        const short =
+            ends[0].toDateString() === ends[1].toDateString()
+                ? ends.map((d) => d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }))
+                : ends.map((d) => d.toLocaleDateString([], { day: 'numeric', month: 'short' }));
+        return fits(short) ? short : [short[0], ''];
+    }, [points, spanHours, plotW]);
 
     // One outer element carrying the ref in every state. The empty case used to
     // return early from its own div, which meant the ResizeObserver effect ran
@@ -190,10 +255,24 @@ export default function TimeSeries({
                     (hasBand ? ` The shaded band is each point's ${bandLabel}.` : '')
                 }
                 tabIndex={0}
-                onPointerMove={onPointer}
-                onPointerLeave={() => setCursor(null)}
+                onPointerDown={onPointerDown}
+                onPointerMove={onPointerMove}
+                onPointerUp={onPointerUp}
+                // A finger lifting also leaves, and the readout it asked for
+                // would vanish with it; a tap elsewhere clears that one.
+                onPointerLeave={(e) => e.pointerType !== 'touch' && setCursor(null)}
+                onPointerCancel={() => {
+                    setCursor(null);
+                    setDrag(null);
+                }}
                 onKeyDown={onKeyDown}
-                style={{ display: 'block', touchAction: 'none', outline: 'none' }}
+                style={{
+                    display: 'block',
+                    touchAction: 'none',
+                    outline: 'none',
+                    cursor: onZoom ? 'crosshair' : undefined,
+                    userSelect: 'none',
+                }}
             >
                 <defs>
                     <linearGradient id={washId} x1="0" x2="0" y1="0" y2="1">
@@ -291,7 +370,7 @@ export default function TimeSeries({
                     fontWeight="600"
                     fill="var(--text-muted)"
                 >
-                    {formatTime(points[0].t, spanHours)}
+                    {axisEnds[0]}
                 </text>
                 <text
                     x={PAD.left + plotW}
@@ -301,7 +380,7 @@ export default function TimeSeries({
                     fontWeight="600"
                     fill="var(--text-muted)"
                 >
-                    {formatTime(points[points.length - 1].t, spanHours)}
+                    {axisEnds[1]}
                 </text>
 
                 {/* The one direct label: the current value at the line's end. This
@@ -327,6 +406,18 @@ export default function TimeSeries({
                             {fmt(points[lastIdx].v)}
                         </text>
                     </>
+                ) : null}
+
+                {/* The range being dragged out, before it becomes the zoom. */}
+                {drag ? (
+                    <rect
+                        x={Math.min(drag.from, drag.to)}
+                        y={PAD.top}
+                        width={Math.abs(drag.to - drag.from)}
+                        height={plotH}
+                        fill="var(--text-muted)"
+                        fillOpacity="0.16"
+                    />
                 ) : null}
 
                 {/* Crosshair */}
@@ -355,69 +446,36 @@ export default function TimeSeries({
             </svg>
 
             {/* Tooltip: the value leads as the strong element, the time follows,
-                and the series is keyed by a short stroke of its color. */}
-            {cur ? (
-                <div
-                    style={{
-                        position: 'absolute',
-                        left: Math.max(8, Math.min(curX - 70, width - 160)),
-                        top: 46,
-                        pointerEvents: 'none',
-                        background: 'var(--surface-1)',
-                        border: '1px solid var(--border)',
-                        borderRadius: 14,
-                        padding: '11px 14px',
-                        boxShadow: 'var(--shadow)',
-                        minWidth: 140,
-                    }}
-                >
+                and the series is keyed by a short stroke of its color. The time
+                is exact: a single reading's moment, or the whole stretch an
+                average covers. It opens away from the nearer edge. */}
+            <div aria-live="polite">
+                {cur ? (
                     <div
+                        className="chart-readout"
                         style={{
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: 8,
-                            fontSize: 20,
-                            fontWeight: 800,
-                            color: 'var(--text-primary)',
+                            top: 46,
+                            ...(curX < width / 2
+                                ? { left: Math.max(8, curX - 70) }
+                                : { right: Math.max(8, width - curX - 70) }),
                         }}
                     >
-                        <span
-                            style={{
-                                width: 14,
-                                height: 3,
-                                borderRadius: 2,
-                                background: color,
-                                flex: 'none',
-                            }}
-                        />
-                        {fmt(cur.v)}
-                        <span style={{ fontSize: 15, fontWeight: 600, color: 'var(--text-muted)' }}>
-                            {unit}
-                        </span>
-                    </div>
-                    {cur.lo != null && cur.hi != null ? (
-                        <div
-                            style={{
-                                fontSize: 15,
-                                fontWeight: 600,
-                                color: 'var(--text-secondary)',
-                                marginTop: 2,
-                            }}
-                        >
-                            {fmt(cur.lo)}–{fmt(cur.hi)} {bandLabel}
+                        <div className="chart-readout-value">
+                            <span className="chart-readout-key" style={{ background: color }} />
+                            {fmt(cur.v)}
+                            <span className="chart-readout-unit">{unit}</span>
                         </div>
-                    ) : null}
-                    <div style={{ fontSize: 14, color: 'var(--text-secondary)', marginTop: 3 }}>
-                        {new Date(cur.t).toLocaleString([], {
-                            day: 'numeric',
-                            month: 'short',
-                            hour: spanHours > 24 * 7 ? undefined : '2-digit',
-                            minute: spanHours > 24 * 7 ? undefined : '2-digit',
-                            year: spanHours > 24 * 120 ? 'numeric' : undefined,
-                        })}
+                        {cur.lo != null && cur.hi != null ? (
+                            <div className="chart-readout-band">
+                                {fmt(cur.lo)}–{fmt(cur.hi)} {bandLabel}
+                            </div>
+                        ) : null}
+                        <div className="chart-readout-time">
+                            {bucketSeconds ? bucketSpan(cur.t, bucketSeconds) : exactTime(cur.t)}
+                        </div>
                     </div>
-                </div>
-            ) : null}
+                ) : null}
+            </div>
             </>
             )}
         </div>

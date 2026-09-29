@@ -328,7 +328,13 @@ function Tile({ label, color, value, unit, decimals = 1, points, band, pending }
                 {pending ? (
                     <span className="skeleton skel-spark" />
                 ) : (
-                    <Sparkline points={points} color={color} />
+                    <Sparkline
+                        points={points}
+                        color={color}
+                        label={`${label}, last ${LIVE_HOURS} hours`}
+                        unit={unit}
+                        decimals={decimals}
+                    />
                 )}
             </div>
         </div>
@@ -525,6 +531,9 @@ export default function App() {
                                         <Sparkline
                                             points={series.soil}
                                             color={SERIES.soil}
+                                            label={`Soil moisture, last ${LIVE_HOURS} hours`}
+                                            unit="%"
+                                            decimals={0}
                                             ring="var(--surface-hero)"
                                         />
                                     </div>

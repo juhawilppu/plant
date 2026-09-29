@@ -217,6 +217,12 @@ then **2.1–2.2**, then **3.1**.
   drag instead; the charts are `aria-hidden` today, so the new detail has to
   reach screen readers too (see 8.5); and all this has to fit without turning
   a small trend line into a cluttered chart.
+  *Mostly done:* pointing at a sparkline, tapping it (the readout stays up
+  until a tap elsewhere), dragging sideways or using the arrow keys shows the
+  value and the exact time of the reading. The sparklines are focusable
+  images now, not `aria-hidden`, and the readout is a polite live region.
+  Left open: the 48 hours are still named only in the footer, and nobody has
+  tested it with a real screen reader yet.
 
 ## 9. Product scope
 

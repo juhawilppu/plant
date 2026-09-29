@@ -520,6 +520,9 @@ const webDist = join(dirname(fileURLToPath(import.meta.url)), '..', 'web', 'dist
 // application/octet-stream, which browsers only render by sniffing it.
 express.static.mime.define({ 'image/avif': ['avif'] });
 app.use(express.static(webDist));
+// The history page is a real path, so a reload or a pasted link lands on it;
+// the page itself decides what to draw from location.pathname.
+app.get('/history', (_req, res) => res.sendFile(join(webDist, 'index.html')));
 
 // Last, so it catches whatever route() passes on. The detail goes to the log,
 // not the response: a database error message is no business of the caller's.

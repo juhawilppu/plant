@@ -5,10 +5,10 @@
 // received (src/savedCopy.js) and says so on screen while it shows it, which a
 // service worker quietly answering /api/ from a cache could never do.
 //
-//   the page (/)        cached copy at once, refreshed in the background
-//   /assets/*           cache first: the file name changes with the content
-//   other static files  cached copy at once, refreshed in the background
-//   /api/*              network only
+//   the page (/, /history)  cached copy at once, refreshed in the background
+//   /assets/*               cache first: the file name changes with the content
+//   other static files      cached copy at once, refreshed in the background
+//   /api/*                  network only
 //
 // A refreshed page is only stored once every /assets/ file it names is stored
 // too, so a new build never lands in the cache without the scripts it needs.
@@ -84,7 +84,8 @@ self.addEventListener('fetch', (event) => {
     if (url.pathname.startsWith('/api/')) return;
 
     if (request.mode === 'navigate') {
-        if (url.pathname !== '/' && url.pathname !== '/index.html') return;
+        // Every page is the same index.html, which draws the one the path names.
+        if (!['/', '/index.html', '/history'].includes(url.pathname)) return;
         event.respondWith(
             (async () => {
                 const cache = await caches.open(SHELL);

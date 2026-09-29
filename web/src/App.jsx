@@ -209,16 +209,42 @@ function findWatering(readings) {
     return null;
 }
 
-// Real links, not buttons: the back button, middle-click and a pasted URL all
-// then work the way a reader expects, for the price of one hashchange listener.
-function useHashRoute() {
-    const [hash, setHash] = useState(() => window.location.hash);
+// Real paths (/history), and real links to them: the back button,
+// middle-click, "copy link" and a pasted URL all work the way a reader expects.
+// A plain click becomes a history.pushState instead of a page load, so the
+// live socket and everything already fetched stay put.
+function useRoute() {
+    const [path, setPath] = useState(() => {
+        // Bookmarks and installed apps from before still carry #/history.
+        if (window.location.hash.startsWith('#/')) {
+            window.history.replaceState(null, '', window.location.hash.slice(1));
+        }
+        return window.location.pathname;
+    });
     useEffect(() => {
-        const onChange = () => setHash(window.location.hash);
-        window.addEventListener('hashchange', onChange);
-        return () => window.removeEventListener('hashchange', onChange);
+        const onPop = () => setPath(window.location.pathname);
+        window.addEventListener('popstate', onPop);
+        return () => window.removeEventListener('popstate', onPop);
     }, []);
-    return hash === '#/history' ? 'history' : 'live';
+    const navigate = (to) => {
+        if (to === window.location.pathname) return;
+        window.history.pushState(null, '', to);
+        setPath(to);
+        // A new page starts at its top. Back and forward restore the old
+        // position on their own.
+        window.scrollTo(0, 0);
+    };
+    return [path === '/history' ? 'history' : 'live', navigate];
+}
+
+function PageLink({ to, navigate, ...props }) {
+    const onClick = (e) => {
+        // Anything but a plain left click (a new tab, a download) is the browser's.
+        if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+        e.preventDefault();
+        navigate(to);
+    };
+    return <a href={to} onClick={onClick} {...props} />;
 }
 
 function Icon({ name, color, size = 20 }) {
@@ -310,7 +336,7 @@ function Tile({ label, color, value, unit, decimals = 1, points, band, pending }
 }
 
 export default function App() {
-    const route = useHashRoute();
+    const [route, navigate] = useRoute();
     const [now, setNow] = useState(() => Date.now());
 
     // Live on both pages: the history view has its own aggregates, but the
@@ -425,9 +451,9 @@ export default function App() {
             {route === 'history' ? (
                 <>
                     <div className="view-switch">
-                        <a className="pagelink" href="#/">
+                        <PageLink className="pagelink" to="/" navigate={navigate}>
                             <span aria-hidden="true">←</span> Back to now
-                        </a>
+                        </PageLink>
                         <h2 className="view-title">The long view</h2>
                     </div>
                     <History device={data?.device ?? 'plant-01'} series={SERIES} />
@@ -551,9 +577,9 @@ export default function App() {
                         <span className="live-foot-note">
                             Everything above is the last {LIVE_HOURS} hours.
                         </span>
-                        <a className="pagelink pagelink-strong" href="#/history">
+                        <PageLink className="pagelink pagelink-strong" to="/history" navigate={navigate}>
                             Look back further <span aria-hidden="true">→</span>
-                        </a>
+                        </PageLink>
                     </div>
                 </>
             )}

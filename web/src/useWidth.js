@@ -38,17 +38,15 @@ export function useTapAway(ref, active, clear) {
 // Points sit across the plot by their time, not by their place in the list, so
 // an outage keeps its real width instead of closing up as if it never happened.
 // `x(i)` places point i; `indexAt(px)` is the point nearest a pixel column, for
-// the crosshair; `timeAt(px)` is the time under a pixel column, for dragging
-// out a range to zoom into.
+// the crosshair.
 export function timeScale(points, left, width) {
     const ms = points.map((p) => Date.parse(p.t));
     const t0 = ms[0];
     const span = ms.length > 1 ? ms[ms.length - 1] - t0 : 0;
     const x = (i) => left + (span > 0 ? ((ms[i] - t0) / span) * width : width / 2);
-    const timeAt = (px) => t0 + ((px - left) / width) * span;
     const indexAt = (px) => {
         if (!ms.length) return null;
-        const t = timeAt(px);
+        const t = t0 + ((px - left) / width) * span;
         let lo = 0;
         let hi = ms.length - 1;
         while (lo < hi) {
@@ -58,7 +56,7 @@ export function timeScale(points, left, width) {
         }
         return lo > 0 && t - ms[lo - 1] < ms[lo] - t ? lo - 1 : lo;
     };
-    return { x, indexAt, timeAt };
+    return { x, indexAt };
 }
 
 // True when point i starts a new run: more than `maxGapMs` passed since the

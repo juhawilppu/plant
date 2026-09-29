@@ -17,15 +17,8 @@ export function exactTime(iso) {
 // here runs from, say, 03:00 to 03:00 and says so rather than claiming a
 // calendar day it does not cover.
 export function bucketSpan(iso, bucketSeconds) {
-    const start = Date.parse(iso);
-    return rangeText(start, start + bucketSeconds * 1000);
-}
-
-// Any stretch of time, to the minute, with the date said once when both ends
-// fall on the same day.
-export function rangeText(fromMs, toMs) {
-    const start = new Date(fromMs);
-    const end = new Date(toMs);
+    const start = new Date(iso);
+    const end = new Date(start.getTime() + bucketSeconds * 1000);
     const from = start.toLocaleString([], { ...DATE, ...TIME });
     if (start.toDateString() === end.toDateString()) {
         return `${from}–${end.toLocaleTimeString([], TIME)}`;

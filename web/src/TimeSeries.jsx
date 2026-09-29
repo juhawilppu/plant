@@ -37,20 +37,10 @@ function niceScale(min, max, count = 4) {
     return { lo, hi, ticks };
 }
 
-// A drag narrower than this is a click that wobbled, not a range.
-const MIN_DRAG_PX = 8;
-
 function formatTime(iso, spanHours) {
     const d = new Date(iso);
-    // Zoomed in to hours or days, the two ends can fall on different days, so
-    // the axis names the day as well as the time.
-    if (spanHours <= 24 * 14) {
-        return d.toLocaleString([], {
-            day: 'numeric',
-            month: 'short',
-            hour: '2-digit',
-            minute: '2-digit',
-        });
+    if (spanHours <= 48) {
+        return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     }
     // Past a few months the day of the month stops carrying information and the
     // year starts to, so the label widens rather than repeating "3 Mar".
@@ -73,12 +63,10 @@ export default function TimeSeries({
     pending = false, // first fetch still in flight: no data, and no claim either
     maxGapMs = Infinity, // neighbours further apart than this have missing data between them
     bucketSeconds = null, // each point averages this long from its `t`; null for single readings
-    onZoom = null, // (fromMs, toMs) => void; when set, dragging across the chart picks a range
     className = '',
 }) {
     const [hostRef, width] = useWidth(640, 260);
     const [cursor, setCursor] = useState(null); // index into points
-    const [drag, setDrag] = useState(null); // { from, to } in svg pixels, while a range is dragged out
     const clearCursor = useCallback(() => setCursor(null), []);
     useTapAway(hostRef, cursor != null, clearCursor);
 
@@ -102,10 +90,7 @@ export default function TimeSeries({
     const plotW = Math.max(10, width - PAD.left - PAD.right);
     const plotH = height - PAD.top - PAD.bottom;
 
-    const { x, indexAt, timeAt } = useMemo(
-        () => timeScale(points, PAD.left, plotW),
-        [points, plotW],
-    );
+    const { x, indexAt } = useMemo(() => timeScale(points, PAD.left, plotW), [points, plotW]);
     const y = useCallback(
         (v) => PAD.top + plotH - ((v - lo) / (hi - lo || 1)) * plotH,
         [lo, hi, plotH],
@@ -156,38 +141,12 @@ export default function TimeSeries({
     const fmt = (v) => (v == null ? '—' : v.toFixed(decimals));
     const washId = `wash-${title.replace(/\W/g, '')}`;
 
-    const svgX = (e) => {
+    const onPointer = (e) => {
         const rect = e.currentTarget.getBoundingClientRect();
-        return ((e.clientX - rect.left) / rect.width) * width;
-    };
-    const inPlot = (px) => Math.max(PAD.left, Math.min(PAD.left + plotW, px));
-
-    // The crosshair snaps to the nearest data position, so the reader aims at a
-    // time rather than at a 2px line. With a mouse, pressing and dragging also
-    // marks out a range to zoom into. A finger dragging sideways keeps reading
-    // values instead, which is what it expects to do; on a phone the range is
-    // picked with the date fields above the charts.
-    const onPointerDown = (e) => {
-        const px = svgX(e);
+        const px = ((e.clientX - rect.left) / rect.width) * width;
+        // The crosshair snaps to the nearest data position, so the reader aims
+        // at a time rather than at a 2px line.
         setCursor(indexAt(px));
-        if (onZoom && e.pointerType !== 'touch' && e.button === 0) {
-            e.currentTarget.setPointerCapture(e.pointerId);
-            setDrag({ from: inPlot(px), to: inPlot(px) });
-        }
-    };
-
-    const onPointerMove = (e) => {
-        const px = svgX(e);
-        setCursor(indexAt(px));
-        if (drag) setDrag({ ...drag, to: inPlot(px) });
-    };
-
-    const onPointerUp = () => {
-        if (!drag) return;
-        const a = Math.min(drag.from, drag.to);
-        const b = Math.max(drag.from, drag.to);
-        setDrag(null);
-        if (b - a >= MIN_DRAG_PX) onZoom(timeAt(a), timeAt(b));
     };
 
     const onKeyDown = (e) => {
@@ -201,31 +160,12 @@ export default function TimeSeries({
             });
         } else if (e.key === 'Escape') {
             setCursor(null);
-            setDrag(null);
         }
     };
 
     // A refetch can bring fewer points than the cursor was pointing into.
     const cur = cursor != null && cursor < points.length ? points[cursor] : null;
     const curX = cur ? x(cursor) : 0;
-
-    // The two ends of the axis, as long as they fit side by side. A zoom to a
-    // day or two names the time as well as the date, and on a narrow card that
-    // pair can run into each other, so it falls back to whichever half still
-    // tells the ends apart: the time within one day, the date across several.
-    // The readout still has the exact time. About 8.5px a character at 15px.
-    const axisEnds = useMemo(() => {
-        if (!points.length) return ['', ''];
-        const ends = [points[0].t, points[points.length - 1].t].map((t) => new Date(t));
-        const fits = ([a, b]) => (a.length + b.length) * 8.5 + 24 <= plotW;
-        const full = ends.map((d) => formatTime(d, spanHours));
-        if (fits(full)) return full;
-        const short =
-            ends[0].toDateString() === ends[1].toDateString()
-                ? ends.map((d) => d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }))
-                : ends.map((d) => d.toLocaleDateString([], { day: 'numeric', month: 'short' }));
-        return fits(short) ? short : [short[0], ''];
-    }, [points, spanHours, plotW]);
 
     // One outer element carrying the ref in every state. The empty case used to
     // return early from its own div, which meant the ResizeObserver effect ran
@@ -255,24 +195,14 @@ export default function TimeSeries({
                     (hasBand ? ` The shaded band is each point's ${bandLabel}.` : '')
                 }
                 tabIndex={0}
-                onPointerDown={onPointerDown}
-                onPointerMove={onPointerMove}
-                onPointerUp={onPointerUp}
+                onPointerDown={onPointer}
+                onPointerMove={onPointer}
                 // A finger lifting also leaves, and the readout it asked for
                 // would vanish with it; a tap elsewhere clears that one.
                 onPointerLeave={(e) => e.pointerType !== 'touch' && setCursor(null)}
-                onPointerCancel={() => {
-                    setCursor(null);
-                    setDrag(null);
-                }}
+                onPointerCancel={() => setCursor(null)}
                 onKeyDown={onKeyDown}
-                style={{
-                    display: 'block',
-                    touchAction: 'none',
-                    outline: 'none',
-                    cursor: onZoom ? 'crosshair' : undefined,
-                    userSelect: 'none',
-                }}
+                style={{ display: 'block', touchAction: 'none', outline: 'none' }}
             >
                 <defs>
                     <linearGradient id={washId} x1="0" x2="0" y1="0" y2="1">
@@ -370,7 +300,7 @@ export default function TimeSeries({
                     fontWeight="600"
                     fill="var(--text-muted)"
                 >
-                    {axisEnds[0]}
+                    {formatTime(points[0].t, spanHours)}
                 </text>
                 <text
                     x={PAD.left + plotW}
@@ -380,7 +310,7 @@ export default function TimeSeries({
                     fontWeight="600"
                     fill="var(--text-muted)"
                 >
-                    {axisEnds[1]}
+                    {formatTime(points[points.length - 1].t, spanHours)}
                 </text>
 
                 {/* The one direct label: the current value at the line's end. This
@@ -406,18 +336,6 @@ export default function TimeSeries({
                             {fmt(points[lastIdx].v)}
                         </text>
                     </>
-                ) : null}
-
-                {/* The range being dragged out, before it becomes the zoom. */}
-                {drag ? (
-                    <rect
-                        x={Math.min(drag.from, drag.to)}
-                        y={PAD.top}
-                        width={Math.abs(drag.to - drag.from)}
-                        height={plotH}
-                        fill="var(--text-muted)"
-                        fillOpacity="0.16"
-                    />
                 ) : null}
 
                 {/* Crosshair */}

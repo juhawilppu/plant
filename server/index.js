@@ -304,9 +304,7 @@ app.get('/api/readings', route(async (req, res) => {
 // average of each bucket together with its low and high - the spread is the
 // part a mean would quietly destroy, and over a day it is most of the story.
 const BUCKET_LADDER_S = [
-    60, // 1 min - the finest step, about one of the node's readings each, for
-    //     a custom range zoomed in to a few hours or less
-    300,
+    300, // 5 min - the finest step, five of the node's readings each
     900,
     1800,
     3600,
@@ -334,31 +332,6 @@ const DAY_BUCKET_FLOOR_S = 14 * 86400;
 
 const HISTORY_RANGES = { '1m': 30, '3m': 91, '6m': 182, '12m': 365, all: null };
 
-// A range of the reader's own, zoomed into on the page: ?from=&to= as ISO
-// times. Narrower than this and even one-minute buckets leave too few points
-// to be a line, so a narrower ask is widened backwards from its end rather
-// than refused - the page rounds a dragged-out range, and the end is often
-// clamped to now, so it can land a little short without meaning to.
-const MIN_CUSTOM_SPAN_MS = 15 * 60 * 1000;
-
-// { from, to } for a custom range, { error } for a bad one, or null when the
-// request names a preset instead. The end is clamped to now: the future has no
-// readings, and a bucket ladder picked for an empty future would be too coarse
-// for the part that does.
-function customRange(query, now) {
-    if (query.from == null && query.to == null) return null;
-    const from = new Date(String(query.from));
-    const to = new Date(String(query.to));
-    if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime())) {
-        return { error: 'from and to must both be dates' };
-    }
-    if (from >= to) return { error: 'from must be before to' };
-    if (from >= now) return { error: 'the range is in the future' };
-    const end = to > now ? now : to;
-    const start = end - from < MIN_CUSTOM_SPAN_MS ? new Date(end - MIN_CUSTOM_SPAN_MS) : from;
-    return { from: start, to: end };
-}
-
 function bucketFor(spanSeconds) {
     const ladder =
         spanSeconds > DAY_BUCKET_FLOOR_S
@@ -374,9 +347,8 @@ function bucketFor(spanSeconds) {
 // long view then still works, just from the store that has to do more work
 // for it. Without CLICKHOUSE_URL (a laptop) it is Postgres only.
 //
-// Both return the first reading ever and the buckets from `from` on - up to
-// `to` for a custom range, and with no end at all for a preset, so a reading
-// stored a moment after `to` was taken is not cut off - in the same shape. Each bucket is the readings whose time, as seconds since 1970,
+// Both return the first reading ever and the buckets from `from` on, in the
+// same shape. Each bucket is the readings whose time, as seconds since 1970,
 // floors to the same multiple of bucketSeconds - identical arithmetic in both
 // stores, so switching between them never shifts a bucket's edge.
 const CLICKHOUSE_TIMEOUT_MS = 3000;
@@ -389,7 +361,7 @@ async function firstReadingPostgres(device) {
     return rows[0].first;
 }
 
-async function bucketsPostgres(device, from, to, bucketSeconds) {
+async function bucketsPostgres(device, from, bucketSeconds) {
     const { rows } = await pool.query(
         `select to_timestamp(floor(extract(epoch from recorded_at) / $3) * $3) as t,
                 count(*)::int                as n,
@@ -408,10 +380,9 @@ async function bucketsPostgres(device, from, to, bucketSeconds) {
            from readings
           where device_id = $1
             and recorded_at >= $2
-            and ($4::timestamptz is null or recorded_at < $4)
           group by 1
           order by 1`,
-        [device, from, bucketSeconds, to],
+        [device, from, bucketSeconds],
     );
     return rows;
 }
@@ -426,7 +397,7 @@ async function firstReadingClickhouse(device) {
     return row.first && new Date(row.first);
 }
 
-async function bucketsClickhouse(device, from, to, bucketSeconds) {
+async function bucketsClickhouse(device, from, bucketSeconds) {
     // FINAL, because the CDC is at-least-once and ReplacingMergeTree drops a
     // duplicate only when it gets round to merging: without it a replayed row
     // would count twice in n and pull on the average until then.
@@ -448,16 +419,10 @@ async function bucketsClickhouse(device, from, to, bucketSeconds) {
            from readings final
           where device_id = {device:String}
             and recorded_at >= fromUnixTimestamp64Milli({from:Int64}, 'UTC')
-            ${to ? "and recorded_at < fromUnixTimestamp64Milli({to:Int64}, 'UTC')" : ''}
           group by t
           order by t`,
         {
-            params: {
-                device,
-                bucket: bucketSeconds,
-                from: new Date(from).getTime(),
-                ...(to ? { to: new Date(to).getTime() } : {}),
-            },
+            params: { device, bucket: bucketSeconds, from: new Date(from).getTime() },
             timeoutMs: CLICKHOUSE_TIMEOUT_MS,
         },
     );
@@ -473,12 +438,9 @@ const historyStores = [
 
 app.get('/api/history', route(async (req, res) => {
     const device = req.query.device || 'plant-01';
-    const now = new Date();
-    const custom = customRange(req.query, now);
-    if (custom?.error) return res.status(400).json({ error: custom.error });
-    const range = custom ? 'custom' : String(req.query.range ?? '3m');
+    const range = String(req.query.range ?? '3m');
     // Own keys only: `in` would also accept inherited names like 'toString'.
-    if (!custom && !Object.hasOwn(HISTORY_RANGES, range)) {
+    if (!Object.hasOwn(HISTORY_RANGES, range)) {
         return res.status(400).json({ error: `unknown range: ${range}` });
     }
 
@@ -496,18 +458,18 @@ app.get('/api/history', route(async (req, res) => {
     for (const [i, store] of historyStores.entries()) {
         try {
             const firstReading = await store.first(device);
-            const to = custom ? custom.to : now;
-            const from = custom
-                ? custom.from
-                : range === 'all'
-                  ? (firstReading ?? to)
-                  : new Date(to.getTime() - HISTORY_RANGES[range] * 86400 * 1000);
+            const to = new Date();
+            const days = HISTORY_RANGES[range];
+            const from =
+                range === 'all'
+                    ? (firstReading ?? to)
+                    : new Date(to.getTime() - days * 86400 * 1000);
 
             // A brand-new device has no span at all; one bucket's worth keeps
             // the ladder from dividing by zero.
-            const spanSeconds = Math.max(60, (to.getTime() - new Date(from).getTime()) / 1000);
+            const spanSeconds = Math.max(300, (to.getTime() - new Date(from).getTime()) / 1000);
             const bucketSeconds = bucketFor(spanSeconds);
-            const rows = await store.buckets(device, from, custom ? to : null, bucketSeconds);
+            const rows = await store.buckets(device, from, bucketSeconds);
             result = { source: store.name, firstReading, from, to, bucketSeconds, rows };
             break;
         } catch (err) {

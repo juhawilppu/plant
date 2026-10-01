@@ -265,7 +265,7 @@ app.get('/api/devices', route(async (_req, res) => {
 app.get('/api/readings', route(async (req, res) => {
     const device = req.query.device || 'plant-01';
     // Clamped so a stray ?hours=999999 cannot ask Postgres for everything. A
-    // week is ~10,000 rows at one a minute; the dashboard asks for 48 hours, and
+    // week is ~10,000 rows at one a minute, which is what the dashboard asks for;
     // anything longer belongs to /api/history, which buckets. The old 90-day cap
     // let any anonymous request pull ~130,000 rows and ~22 MB of JSON.
     const hours = Math.min(Math.max(parseInt(req.query.hours ?? '24', 10) || 24, 1), 24 * 7);

@@ -27,7 +27,7 @@ const MAX_BACKOFF_MS = 30 * 1000;
 // The snapshot, the socket's hello and every heartbeat say what time the
 // server makes it. Each sample is late by however long it took to arrive,
 // which only ever makes the offset read low, so the best recent sample is the
-// highest: a slow 48-hour snapshot cannot drag the count a second off.
+// highest: a slow week-long snapshot cannot drag the count a second off.
 const CLOCK_SAMPLES = 10;
 
 export default function useLive(device, hours) {
@@ -51,7 +51,7 @@ export default function useLive(device, hours) {
     const savedKey = `live?device=${encodeURIComponent(device)}&hours=${hours}`;
 
     // The saved copy, if there is one worth showing. One whose newest reading
-    // has already aged out of the window would draw as "nothing in 48 hours",
+    // has already aged out of the window would draw as "nothing in 7 days",
     // which is a claim about the plant that nobody made, so it is skipped and
     // the page waits for the network instead.
     useEffect(() => {

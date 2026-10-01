@@ -76,7 +76,7 @@ flowchart TB
 3. The winning insert raises a `NOTIFY` in the same statement. **Both**
    instances `LISTEN`, read the new row back, and push it down every WebSocket
    they hold.
-4. The **dashboard** loads 48 hours over HTTP once, then adds whatever the
+4. The **dashboard** loads 7 days over HTTP once, then adds whatever the
    socket pushes. It reaches the instances through **Cloudflare** and
    **Caddy**, which round-robins between them and skips one whose `/health`
    fails.
@@ -141,7 +141,7 @@ sequenceDiagram
     K->>B: tries the twin
     B->>D: hello, instance b
     B->>D: the latest stored reading
-    D->>K: re-fetch the 48-hour snapshot
+    D->>K: re-fetch the 7-day snapshot
     Note over D: Live again, nothing missed
     C->>A: docker start, 20 s later
     Note over K,A: /health passes, A is back in rotation
@@ -175,7 +175,7 @@ about a second, and the re-fetch covers anything stored while it was away.
 
 ### Live updates, given a minute's poll would do
 
-The dashboard does not poll. It fetches its 48 hours over HTTP once, then
+The dashboard does not poll. It fetches its 7 days over HTTP once, then
 listens on `/api/live` for each new reading. That is overkill for a plant, and
 kept anyway, because this project is over-engineered on purpose. What makes it
 more than a socket bolted on:
@@ -384,10 +384,10 @@ need anything?"; **the long view** (`/history`) answers "what has been
 happening?". Every measure appears exactly once on each, in the form that page
 needs - the same number never gets a tile *and* a chart on one screen.
 
-- **Now** is the last 48 hours: one hero figure, three stat tiles, and a
+- **Now** is the last 7 days: one hero figure, three stat tiles, and a
   sparkline under each as a trend cue only. Anything with axes lives on the
-  other page. 48 hours because that is the window where a reading still implies
-  an action - long enough to show last night as well as this one.
+  other page. A week because a plant lives in days, not hours - long enough to
+  hold a whole dry-down and the watering before it.
 - **The long view** is 1 / 3 / 6 / 12 months or all time, bucketed server-side by
   `GET /api/history`, from ClickHouse. A year is ~525k rows, so the server sends one average per
   bucket with that bucket's low and high, and the chart draws the average as the

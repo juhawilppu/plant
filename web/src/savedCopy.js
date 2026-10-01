@@ -2,8 +2,8 @@
 // next visit can draw something at once, before the network answers, and so a
 // visit with no network at all still shows what was last known.
 //
-// It lives in the Cache API rather than localStorage: two days of readings is
-// most of a megabyte of JSON, which is too much to write synchronously on the
+// It lives in the Cache API rather than localStorage: a week of readings is
+// over a megabyte of JSON, which is too much to write synchronously on the
 // main thread every minute. Every call swallows its own failures - a private
 // window, a full disk, a browser without caches - because a missing saved copy
 // only costs the instant first paint, never correctness.

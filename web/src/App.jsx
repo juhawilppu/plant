@@ -9,13 +9,15 @@ import useLive from './useLive.js';
 
 // Two pages, and the split is the whole design. This one is "how is the plant
 // right now?": every measure appears exactly once, as a big current number with
-// the last two days of shape under it. Anything that needs a chart with axes
+// the last week of shape under it. Anything that needs a chart with axes
 // belongs to the other page, behind the history link at the bottom.
 //
-// 48 hours because that is the window where a reading still implies an action.
-// It is long enough to show last night as well as this one, and short enough
-// that a dry-down still looks like a slope rather than a flat line.
-const LIVE_HOURS = 48;
+// A week because a plant lives in days, not hours: a dry-down takes several,
+// so a week holds the whole of the last one, when it was last watered, and
+// enough nights to tell an odd one from the usual. It is also as far as
+// /api/readings goes before it would have to bucket.
+const LIVE_DAYS = 7;
+const LIVE_HOURS = LIVE_DAYS * 24;
 
 const SERIES = {
     soil: 'var(--series-soil)',
@@ -331,7 +333,7 @@ function Tile({ label, color, value, unit, decimals = 1, points, band, pending }
                     <Sparkline
                         points={points}
                         color={color}
-                        label={`${label}, last ${LIVE_HOURS} hours`}
+                        label={`${label}, last ${LIVE_DAYS} days`}
                         unit={unit}
                         decimals={decimals}
                     />
@@ -506,7 +508,7 @@ export default function App() {
                                 </div>
                             ) : latest == null ? (
                                 <div className="hero-aside">
-                                    Nothing has arrived in the last {LIVE_HOURS} hours. Either the
+                                    Nothing has arrived in the last {LIVE_DAYS} days. Either the
                                     node has stopped publishing, or it has not been running that
                                     long yet.
                                 </div>
@@ -531,7 +533,7 @@ export default function App() {
                                         <Sparkline
                                             points={series.soil}
                                             color={SERIES.soil}
-                                            label={`Soil moisture, last ${LIVE_HOURS} hours`}
+                                            label={`Soil moisture, last ${LIVE_DAYS} days`}
                                             unit="%"
                                             decimals={0}
                                             ring="var(--surface-hero)"
@@ -584,7 +586,7 @@ export default function App() {
 
                     <div className="live-foot">
                         <span className="live-foot-note">
-                            Everything above is the last {LIVE_HOURS} hours.
+                            Everything above is the last {LIVE_DAYS} days.
                         </span>
                         <PageLink className="pagelink pagelink-strong" to="/history" navigate={navigate}>
                             Look back further <span aria-hidden="true">→</span>

@@ -3,7 +3,7 @@ import { readSaved, savedAtText, writeSaved } from './savedCopy.js';
 import TimeSeries from './TimeSeries.jsx';
 
 // The long view. The live page answers "does the plant need anything right
-// now?" and deliberately shows only the last two days; this one answers the
+// now?" and deliberately shows only the last week; this one answers the
 // slower questions - is the room drying out as winter comes on, has the
 // watering rhythm changed, was last summer brighter than this one.
 //

@@ -2,7 +2,7 @@ import React, { useCallback, useMemo, useState } from 'react';
 import useWidth, { linePath, segmentsOf, timeScale, useTapAway } from './useWidth.js';
 import { exactTime } from './when.js';
 
-// The shape of a tile's last two days, with no axes - the tile's own big number
+// The shape of a tile's last week, with no axes - the tile's own big number
 // carries the current value. What it does carry is every reading behind the
 // shape: the pointer, a finger or the arrow keys pick one out, and a readout
 // says its value and exactly when it was taken, so a bump can be explained
